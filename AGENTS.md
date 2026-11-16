@@ -1,8 +1,8 @@
-# agent-sdk instructions
+# `agent-sdk` instructions
 
-- This is a standalone repository; it must never depend on parent/sibling source or configuration.
-- Use npm only and commit this repository's own `package-lock.json` when application code begins.
-- Do not add application code until Phase 3 is explicitly started.
-- Never expose raw wallet private keys.
-- Preserve adapter boundaries for identity, signer and policy enforcement.
-- Re-verify Fuji/ERC-8004 facts before implementation.
+**Owner in Wave 1:** Antigravity  
+**Active architectural authority:** `../docs/architecture/decisions/ADR-0015-actorbazaar-docker-and-a2a-mvp.md`
+
+## Role
+
+TypeScript SDK and CLI (`@facet/agent-sdk`) for programmatic interaction with FACET's catalog (`search`, `inspect`), 1-step Actor/Agent publishing (`publish-actor`, `register-agent`), and paid invocation (`invoke`) across `HOSTED_ACTOR`, `AUTONOMOUS_AGENT` (ERC-8004 A2A), and `EXTERNAL_HTTP_API` capabilities.
