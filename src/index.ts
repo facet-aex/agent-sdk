@@ -1,3 +1,39 @@
+export {
+  DEFAULT_WALLET_ACCOUNT,
+  DEFAULT_WALLET_SERVICE,
+  FUJI_WALLET_CHAIN_ID,
+  FUJI_WALLET_NETWORK,
+  MacOsKeychainBackend,
+  WalletStore,
+  WalletStoreError,
+  redactSecrets,
+  type CommandResult,
+  type CredentialBackend,
+  type SecurityCommandRunner,
+  type WalletCreateResult,
+  type WalletImportResult,
+  type WalletStoreErrorCode,
+} from "./wallet-store.js";
+export {
+  DEFAULT_FACET_ORIGIN,
+  FACET_ACTOR_REGISTRY_ADDRESS,
+  FACET_FEE_SPLIT_ADDRESS,
+  FACET_RECEIPT_LOG_ADDRESS,
+  FUJI_CHAIN_ID,
+  FUJI_NETWORK,
+  FUJI_RPC_URL,
+  FUSD_ASSET_ADDRESS,
+  FUSD_DECIMALS,
+  FUSD_SYMBOL,
+  FujiWalletError,
+  createViemFujiClient,
+  formatFusdAtomic,
+  readFujiWalletStatus,
+  type FujiRpcClient,
+  type FujiWalletErrorCode,
+  type FujiWalletStatus,
+} from "./fuji-wallet.js";
+
 export type FacetType =
   | "EXTERNAL_HTTP_API"
   | "HOSTED_ACTOR"

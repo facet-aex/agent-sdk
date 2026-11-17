@@ -1,9 +1,16 @@
 {
-  "name": "@facet/agent-sdk",
-  "version": "0.1.0",
-  "description": "FACET TypeScript SDK and CLI for multi-modal discovery, 1-step Actor/Agent publishing, and invocation.",
+  "name": "@facet-aex/cli",
+  "version": "0.2.0",
+  "description": "FACET buyer CLI and TypeScript SDK for Fuji wallet custody, spending policy, discovery, and invocation.",
   "type": "module",
   "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "bin": {
     "facet": "./dist/cli.js"
   },
@@ -11,10 +18,19 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./wallet": {
+      "types": "./dist/wallet-store.d.ts",
+      "import": "./dist/wallet-store.js"
+    },
+    "./fuji": {
+      "types": "./dist/fuji-wallet.d.ts",
+      "import": "./dist/fuji-wallet.js"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "postbuild": "node --eval \"require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
     "clean": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "prebuild": "npm run clean",
     "typecheck": "tsc --noEmit",
@@ -22,12 +38,15 @@
     "verify": "npm run typecheck && npm test && npm run build"
   },
   "engines": {
-    "node": ">=24.12.0 <25"
+    "node": ">=22.0.0"
   },
   "packageManager": "npm@11.6.2",
   "devDependencies": {
     "@types/node": "26.6.6",
     "typescript": "6.0.3",
     "vitest": "5.1.0"
+  },
+  "dependencies": {
+    "viem": "2.57.17"
   }
 }
