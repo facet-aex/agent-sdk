@@ -31,6 +31,17 @@ facet policy revoke --facet <username/facet-name|facetId>
 
 Policies bind to the local wallet profile (`~/.config/facet/policies.json` + `~/.config/facet/spend-ledger.json` for `"default"`), so all local MCP clients (`codex`, `claude`, `antigravity`) share the same enforced caps and cross-process reservation lock. Pass `--profile <name>` (stored under `~/.config/facet/profiles/<name>/`) when you want isolated wallets/caps per agent.
 
+## MCP Client Integration
+
+```bash
+facet mcp install codex         # updates ~/.codex/config.toml (preserving existing servers)
+facet mcp install claude        # configures Claude Code user scope (via CLI or ~/.claude.json)
+facet mcp install antigravity   # updates ~/.gemini/antigravity/mcp_config.json
+facet mcp config codex          # prints a pasteable snippet without writing files
+```
+
+Pass `--profile <name>` if you want a client isolated to a specific wallet/policy profile (`FACET_PROFILE`). No private keys or local `dist/` paths are ever written into MCP config.
+
 ## Verification
 
 ```bash

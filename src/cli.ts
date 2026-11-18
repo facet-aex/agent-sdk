@@ -10,8 +10,11 @@ import {
   WalletStore,
   WalletStoreError,
   defaultPolicyStorePath,
+  installMcpClient,
+  isMcpClientName,
   readFujiWalletStatus,
   redactSecrets,
+  renderMcpConfigSnippet,
   resolveProfileName,
   type FacetType,
   type FujiRpcClient,
@@ -262,6 +265,37 @@ export async function runCli(
       return 1;
     }
 
+    if (command === "mcp") {
+      const [subcommand, clientArg, ...subRest] = rest;
+      const profile = resolveProfileName(argValue(subRest, "--profile"), env);
+      const origin = argValue(subRest, "--origin");
+      const mcpVersion = argValue(subRest, "--mcp-version");
+      if (!clientArg || !isMcpClientName(clientArg)) {
+        stderr(
+          "Usage: facet mcp <install|config> <codex|claude|antigravity> [--profile <name>]",
+        );
+        return 1;
+      }
+      const mcpOptions = {
+        profile,
+        ...(origin ? { origin } : {}),
+        ...(mcpVersion ? { mcpVersion } : {}),
+      };
+      if (subcommand === "config") {
+        stdout(renderMcpConfigSnippet(clientArg, mcpOptions));
+        return 0;
+      }
+      if (subcommand === "install") {
+        const result = await installMcpClient(clientArg, mcpOptions);
+        stdout(JSON.stringify(result, null, 2));
+        return 0;
+      }
+      stderr(
+        "Usage: facet mcp <install|config> <codex|claude|antigravity> [--profile <name>]",
+      );
+      return 1;
+    }
+
     if (command === "search") {
       const query = rest[0] && !rest[0].startsWith("--") ? rest[0] : "";
       const type = argValue(rest, "--type") as FacetType | undefined;
@@ -293,7 +327,7 @@ export async function runCli(
     }
 
     stderr(
-      "Usage: facet <wallet <create|import|status> | policy <grant|show|revoke> | search [query] [--type HOSTED_ACTOR|AUTONOMOUS_AGENT|EXTERNAL_HTTP_API] | inspect <facetId> | publish-actor --file <json>>",
+      "Usage: facet <wallet <create|import|status> | policy <grant|show|revoke> | mcp <install|config> <codex|claude|antigravity> | search [query] [--type HOSTED_ACTOR|AUTONOMOUS_AGENT|EXTERNAL_HTTP_API] | inspect <username/facet-name|facetId> | publish-actor --file <json>>",
     );
     return 1;
   } catch (error) {

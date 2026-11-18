@@ -34,6 +34,10 @@
     "./ledger": {
       "types": "./dist/spend-ledger.d.ts",
       "import": "./dist/spend-ledger.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp-install.d.ts",
+      "import": "./dist/mcp-install.js"
     }
   },
   "scripts": {

@@ -62,6 +62,26 @@ export {
   type SpendPolicyGrant,
 } from "./spend-policy.js";
 
+export {
+  MCP_CLIENT_NAMES,
+  PINNED_MCP_PACKAGE_NAME,
+  PINNED_MCP_PACKAGE_VERSION,
+  buildFacetMcpSpec,
+  isMcpClientName,
+  renderCodexTomlSection,
+  renderMcpConfigSnippet,
+  type BuildMcpSpecOptions,
+  type FacetMcpServerSpec,
+  type McpClientName,
+} from "./mcp-config.js";
+export {
+  McpInstallError,
+  installMcpClient,
+  type InstallMcpOptions,
+  type InstallMcpResult,
+  type McpInstallErrorCode,
+} from "./mcp-install.js";
+
 export type FacetType =
   | "EXTERNAL_HTTP_API"
   | "HOSTED_ACTOR"
