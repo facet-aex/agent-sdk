@@ -7,6 +7,7 @@ export {
   WalletStore,
   WalletStoreError,
   redactSecrets,
+  resolveProfileName,
   type CommandResult,
   type CredentialBackend,
   type SecurityCommandRunner,
@@ -33,6 +34,33 @@ export {
   type FujiWalletErrorCode,
   type FujiWalletStatus,
 } from "./fuji-wallet.js";
+export {
+  SpendLedger,
+  SpendLedgerError,
+  defaultSpendLedgerPath,
+  parsePositiveAtomic,
+  utcDayKey,
+  type ConfirmOptions,
+  type ReserveOptions,
+  type SpendEntryStatus,
+  type SpendLedgerEntry,
+  type SpendLedgerErrorCode,
+} from "./spend-ledger.js";
+export {
+  DEFAULT_POLICY_DAILY_CAP_ATOMIC,
+  DEFAULT_POLICY_MAX_PER_RUN_ATOMIC,
+  PolicyStore,
+  SpendPolicyError,
+  addOneMonthUtc,
+  authorizePaymentChallenge,
+  defaultPolicyStorePath,
+  validateGrantAgainstChallenge,
+  type AuthorizeChallengeInput,
+  type GrantPolicyInput,
+  type PublicFacetRecord,
+  type SpendPolicyErrorCode,
+  type SpendPolicyGrant,
+} from "./spend-policy.js";
 
 export type FacetType =
   | "EXTERNAL_HTTP_API"
@@ -91,6 +119,60 @@ export class FacetClient {
       throw new Error(body.error?.message ?? `HTTP ${response.status}`);
     }
     return body.facet;
+  }
+
+  async resolveFacet(facetRef: string) {
+    const trimmed = facetRef.trim();
+    if (
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(
+        trimmed,
+      )
+    ) {
+      return this.getFacet(trimmed);
+    }
+
+    const parts = trimmed.split("/");
+    if (parts.length === 2 && parts[0] && parts[1]) {
+      const [username, facetSlug] = parts;
+      const directUrl = new URL(
+        `/v1/catalog/facets/${encodeURIComponent(username)}/${encodeURIComponent(facetSlug)}`,
+        this.config.controlApiUrl,
+      );
+      const directRes = await fetch(directUrl, {
+        headers: { accept: "application/json" },
+      });
+      if (directRes.ok) {
+        const body = (await directRes.json()) as { facet?: unknown };
+        if (body.facet) return body.facet;
+      }
+
+      const candidates = (await this.searchFacets({
+        query: facetSlug,
+        limit: 50,
+      })) as Array<{
+        slug?: string;
+        fullName?: string;
+        provider?: { slug?: string };
+      }>;
+      return candidates.find(
+        (candidate) =>
+          candidate.fullName === trimmed ||
+          (candidate.provider?.slug === username &&
+            candidate.slug === facetSlug),
+      );
+    }
+
+    const candidates = (await this.searchFacets({
+      query: trimmed,
+      limit: 50,
+    })) as Array<{ slug?: string }>;
+    const matches = candidates.filter((candidate) => candidate.slug === trimmed);
+    if (matches.length > 1) {
+      throw new Error(
+        `AMBIGUOUS_FACET_NAME: Multiple facets match '${trimmed}'. Specify <username>/<facet-name>.`,
+      );
+    }
+    return matches[0];
   }
 
   async publishActor(input: {

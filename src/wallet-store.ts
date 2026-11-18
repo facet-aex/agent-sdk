@@ -10,6 +10,20 @@ export const FUJI_WALLET_NETWORK = "eip155:43113" as const;
 const PRIVATE_KEY_REGEX = /^0x[0-9a-fA-F]{64}$/u;
 const SAFE_KEYCHAIN_TOKEN = /^[a-zA-Z0-9._-]+$/u;
 
+export function resolveProfileName(
+  explicit?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const candidate = (explicit ?? env.FACET_PROFILE ?? DEFAULT_WALLET_ACCOUNT).trim();
+  if (!SAFE_KEYCHAIN_TOKEN.test(candidate)) {
+    throw new WalletStoreError(
+      "KEYCHAIN_ERROR",
+      "Invalid profile name; use only letters, digits, '.', '_', or '-'.",
+    );
+  }
+  return candidate;
+}
+
 export type WalletStoreErrorCode =
   | "WALLET_NOT_FOUND"
   | "WALLET_ALREADY_EXISTS"
@@ -224,6 +238,7 @@ export class WalletStore {
   constructor(options?: {
     serviceName?: string;
     accountName?: string;
+    profile?: string;
     backend?: CredentialBackend;
   }) {
     this.serviceName =
@@ -232,8 +247,9 @@ export class WalletStore {
       DEFAULT_WALLET_SERVICE;
     this.accountName =
       options?.accountName ??
-      process.env.FACET_WALLET_ACCOUNT ??
-      DEFAULT_WALLET_ACCOUNT;
+      (options?.profile
+        ? resolveProfileName(options.profile)
+        : process.env.FACET_WALLET_ACCOUNT ?? resolveProfileName());
     this.backend = options?.backend ?? new MacOsKeychainBackend();
   }
 

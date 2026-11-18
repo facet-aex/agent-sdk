@@ -6,16 +6,21 @@ import { fileURLToPath } from "node:url";
 import {
   DEFAULT_FACET_ORIGIN,
   FacetClient,
+  PolicyStore,
   WalletStore,
   WalletStoreError,
+  defaultPolicyStorePath,
   readFujiWalletStatus,
   redactSecrets,
+  resolveProfileName,
   type FacetType,
   type FujiRpcClient,
+  type PublicFacetRecord,
 } from "./index.js";
 
 export interface CliDependencies {
   walletStore?: WalletStore;
+  policyStore?: PolicyStore;
   fujiClient?: FujiRpcClient;
   promptSecret?: (prompt: string) => Promise<string>;
   stdout?: (line: string) => void;
@@ -133,7 +138,10 @@ export async function runCli(
     if (command === "wallet") {
       const [subcommand, ...subRest] = rest;
       assertNoSecretInArgv(subRest);
-      const walletStore = deps.walletStore ?? new WalletStore();
+      const profileArg = argValue(subRest, "--profile");
+      const profile = resolveProfileName(profileArg, env);
+      const walletStore =
+        deps.walletStore ?? new WalletStore({ profile });
 
       if (subcommand === "create") {
         const result = await walletStore.createWallet();
@@ -157,22 +165,102 @@ export async function runCli(
           ...(deps.fujiClient ? { client: deps.fujiClient } : {}),
           ...(env.FACET_FUJI_RPC_URL ? { rpcUrl: env.FACET_FUJI_RPC_URL } : {}),
         });
-        stdout(JSON.stringify(status, null, 2));
+        stdout(JSON.stringify({ profile, ...status }, null, 2));
         return 0;
       }
 
-      stderr("Usage: facet wallet <create|import|status>");
+      stderr("Usage: facet wallet <create|import|status> [--profile <name>]");
       return 1;
     }
 
     const controlApiUrl =
-      env.FACET_CONTROL_API_URL ?? DEFAULT_FACET_ORIGIN;
+      argValue(rest, "--origin") ??
+      env.FACET_CONTROL_API_URL ??
+      DEFAULT_FACET_ORIGIN;
     const client = new FacetClient({
       controlApiUrl,
       ...(env.FACET_GATEWAY_URL ? { gatewayUrl: env.FACET_GATEWAY_URL } : {}),
       ...(env.FACET_DEV_USER ? { devUser: env.FACET_DEV_USER } : {}),
       ...(env.FACET_BEARER_TOKEN ? { bearerToken: env.FACET_BEARER_TOKEN } : {}),
     });
+
+    if (command === "policy") {
+      const [subcommand, ...subRest] = rest;
+      const profile = resolveProfileName(argValue(subRest, "--profile"), env);
+      const policyStore =
+        deps.policyStore ??
+        new PolicyStore({
+          profile,
+          filePath: defaultPolicyStorePath(env, profile),
+        });
+
+      if (subcommand === "grant") {
+        const facetRef = argValue(subRest, "--facet");
+        const versionId = argValue(subRest, "--version");
+        const maxPerRun = argValue(subRest, "--max-per-run");
+        const dailyCap = argValue(subRest, "--daily-cap");
+        const expires = argValue(subRest, "--expires");
+        if (!facetRef) {
+          stderr(
+            "Usage: facet policy grant --facet <username/facet-name|facetId> [--version <displayVersion|versionId>] [--max-per-run 1000] [--daily-cap 10000] [--expires <ISO8601>] [--profile <name>]",
+          );
+          return 1;
+        }
+        const facet = (await client.resolveFacet(facetRef)) as
+          | PublicFacetRecord
+          | undefined;
+        if (!facet) {
+          stderr(
+            `POLICY_FACET_NOT_FOUND: Facet ${facetRef} not found in catalog.`,
+          );
+          return 1;
+        }
+        const policy = await policyStore.grant({
+          facet,
+          facetId: facet.id,
+          profile,
+          ...(versionId ? { versionId } : {}),
+          ...(maxPerRun ? { maxPerRunAtomic: maxPerRun } : {}),
+          ...(dailyCap ? { dailyCapAtomic: dailyCap } : {}),
+          ...(expires ? { expiresAt: expires } : {}),
+        });
+        stdout(JSON.stringify({ policy }, null, 2));
+        return 0;
+      }
+
+      if (subcommand === "show") {
+        const facetId = argValue(subRest, "--facet");
+        const versionId = argValue(subRest, "--version");
+        const result = await policyStore.show({
+          ...(facetId ? { facetId } : {}),
+          ...(versionId ? { versionId } : {}),
+        });
+        stdout(JSON.stringify(result, null, 2));
+        return 0;
+      }
+
+      if (subcommand === "revoke") {
+        const all = subRest.includes("--all");
+        const facetId = argValue(subRest, "--facet");
+        const versionId = argValue(subRest, "--version");
+        if (!all && !facetId && !versionId) {
+          stderr(
+            "Usage: facet policy revoke (--facet <username/facet-name|facetId> [--version <displayVersion|versionId>] | --all) [--profile <name>]",
+          );
+          return 1;
+        }
+        const result = await policyStore.revoke({
+          ...(facetId ? { facetId } : {}),
+          ...(versionId ? { versionId } : {}),
+          ...(all ? { all: true } : {}),
+        });
+        stdout(JSON.stringify(result, null, 2));
+        return 0;
+      }
+
+      stderr("Usage: facet policy <grant|show|revoke> [--profile <name>]");
+      return 1;
+    }
 
     if (command === "search") {
       const query = rest[0] && !rest[0].startsWith("--") ? rest[0] : "";
@@ -184,7 +272,11 @@ export async function runCli(
     }
 
     if (command === "inspect" && rest[0]) {
-      const facet = await client.getFacet(rest[0]);
+      const facet = await client.resolveFacet(rest[0]);
+      if (!facet) {
+        stderr(`NOT_FOUND: Facet ${rest[0]} not found.`);
+        return 1;
+      }
       stdout(JSON.stringify({ facet }, null, 2));
       return 0;
     }
@@ -201,7 +293,7 @@ export async function runCli(
     }
 
     stderr(
-      "Usage: facet <wallet <create|import|status> | search [query] [--type HOSTED_ACTOR|AUTONOMOUS_AGENT|EXTERNAL_HTTP_API] | inspect <facetId> | publish-actor --file <json>>",
+      "Usage: facet <wallet <create|import|status> | policy <grant|show|revoke> | search [query] [--type HOSTED_ACTOR|AUTONOMOUS_AGENT|EXTERNAL_HTTP_API] | inspect <facetId> | publish-actor --file <json>>",
     );
     return 1;
   } catch (error) {

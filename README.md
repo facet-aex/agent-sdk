@@ -9,6 +9,8 @@ Installable buyer CLI and TypeScript library for FACET on Avalanche Fuji (`chain
 
 ## Buyer Wallet Commands
 
+Normal usage requires **no environment variables** (defaults to profile `"default"`):
+
 ```bash
 facet wallet create   # generates a dedicated Fuji EOA and stores its key in macOS Keychain
 facet wallet import   # imports a 0x-prefixed private key via hidden interactive prompt
@@ -16,6 +18,18 @@ facet wallet status   # checks Fuji chain ID (43113) and prints address + fUSD b
 ```
 
 `FacetUSD` (`fUSD`) on Fuji is owner-minted; fund your buyer address via an explicit operator transfer rather than an automated public faucet.
+
+## Spending Policy Commands (UTC Day Boundary)
+
+Only `--facet` is required (`--version` defaults to the latest published version, `--max-per-run` to `1000`, `--daily-cap` to `10000`, and `--expires` to 1 month UTC from grant time):
+
+```bash
+facet policy grant --facet <username/facet-name|facetId>
+facet policy show
+facet policy revoke --facet <username/facet-name|facetId>
+```
+
+Policies bind to the local wallet profile (`~/.config/facet/policies.json` + `~/.config/facet/spend-ledger.json` for `"default"`), so all local MCP clients (`codex`, `claude`, `antigravity`) share the same enforced caps and cross-process reservation lock. Pass `--profile <name>` (stored under `~/.config/facet/profiles/<name>/`) when you want isolated wallets/caps per agent.
 
 ## Verification
 

@@ -156,6 +156,8 @@ describe("facet wallet CLI & packaging", () => {
     expect(paths).toContain("dist/index.js");
     expect(paths).toContain("dist/wallet-store.js");
     expect(paths).toContain("dist/fuji-wallet.js");
+    expect(paths).toContain("dist/spend-policy.js");
+    expect(paths).toContain("dist/spend-ledger.js");
     expect(paths.some((p) => p.startsWith("test/"))).toBe(false);
     expect(paths.some((p) => p.startsWith("src/"))).toBe(false);
     expect(paths.some((p) => p.includes(".superpowers"))).toBe(false);

@@ -26,6 +26,14 @@
     "./fuji": {
       "types": "./dist/fuji-wallet.d.ts",
       "import": "./dist/fuji-wallet.js"
+    },
+    "./policy": {
+      "types": "./dist/spend-policy.d.ts",
+      "import": "./dist/spend-policy.js"
+    },
+    "./ledger": {
+      "types": "./dist/spend-ledger.d.ts",
+      "import": "./dist/spend-ledger.js"
     }
   },
   "scripts": {
