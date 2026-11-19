@@ -23,13 +23,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
           cache: npm
+      - name: Ensure npm >= 11.5.1 for Trusted Publishing (OIDC)
+        run: npm install -g npm@latest
       - run: npm ci
       - run: npm run verify
-      - name: Publish @facet-aex/cli
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish @facet-aex/cli via Trusted Publishing (OIDC)
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
             npm publish --dry-run --access public
