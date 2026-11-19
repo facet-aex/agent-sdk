@@ -23,7 +23,7 @@ function createMemoryBackend(): CredentialBackend {
 }
 
 describe("facet wallet CLI & packaging", () => {
-  it("handles wallet create, status, and duplicate rejection without printing secrets", async () => {
+  it("prints human-readable output by default, supports --json, and rejects duplicate/plaintext keys", async () => {
     const backend = createMemoryBackend();
     const store = new WalletStore({ backend });
     const fujiClient: FujiRpcClient = {
@@ -42,16 +42,15 @@ describe("facet wallet CLI & packaging", () => {
 
     expect(createCode).toBe(0);
     expect(stderr).toEqual([]);
-    const created = JSON.parse(stdout[0]!) as {
-      address: string;
-      chainId: number;
-      network: string;
-      created: boolean;
-    };
-    expect(created.address).toMatch(/^0x[a-fA-F0-9]{40}$/u);
-    expect(created.chainId).toBe(43113);
-    expect(created.created).toBe(true);
-    expect(stdout.join("\n")).not.toMatch(/0x[a-fA-F0-9]{64}/u);
+    const createText = stdout.join("\n");
+    expect(createText).toContain("FACET Wallet Created");
+    expect(createText).toMatch(/0x[a-fA-F0-9]{40}/u);
+    expect(() => JSON.parse(createText)).toThrow();
+    expect(createText).not.toMatch(/0x[a-fA-F0-9]{64}/u);
+
+    const addressMatch = createText.match(/0x[a-fA-F0-9]{40}/u);
+    expect(addressMatch).not.toBeNull();
+    const expectedAddress = addressMatch![0];
 
     const statusOut: string[] = [];
     const statusCode = await runCli(["wallet", "status"], {
@@ -62,11 +61,25 @@ describe("facet wallet CLI & packaging", () => {
     });
 
     expect(statusCode).toBe(0);
-    const status = JSON.parse(statusOut[0]!) as Record<string, unknown>;
-    expect(status.address).toBe(created.address);
-    expect(status.balanceAtomic).toBe("1000");
-    expect(status.balanceFormatted).toBe("0.001000");
-    expect(statusOut.join("\n")).not.toMatch(/0x[a-fA-F0-9]{64}/u);
+    const statusText = statusOut.join("\n");
+    expect(statusText).toContain("FACET Wallet Status");
+    expect(statusText).toContain(expectedAddress);
+    expect(statusText).toContain("0.001000 fUSD (1000 atomic)");
+    expect(() => JSON.parse(statusText)).toThrow();
+    expect(statusText).not.toMatch(/0x[a-fA-F0-9]{64}/u);
+
+    const statusJsonOut: string[] = [];
+    const statusJsonCode = await runCli(["wallet", "status", "--json"], {
+      walletStore: store,
+      fujiClient,
+      stdout: (line) => statusJsonOut.push(line),
+      stderr: (line) => stderr.push(line),
+    });
+    expect(statusJsonCode).toBe(0);
+    const statusJson = JSON.parse(statusJsonOut[0]!) as Record<string, unknown>;
+    expect(statusJson.address).toBe(expectedAddress);
+    expect(statusJson.balanceAtomic).toBe("1000");
+    expect(statusJson.balanceFormatted).toBe("0.001000");
 
     const dupErr: string[] = [];
     const dupCode = await runCli(["wallet", "create"], {
@@ -79,17 +92,15 @@ describe("facet wallet CLI & packaging", () => {
     expect(dupErr.join("\n")).toContain("WALLET_ALREADY_EXISTS");
   });
 
-  it("imports via secure prompt and rejects private keys passed in argv", async () => {
+  it("imports via secure prompt (human-readable default + --json) and rejects private keys passed in argv", async () => {
     const testKey = ("0x" + "2".repeat(64)) as `0x${string}`;
     const expectedAddress = privateKeyToAccount(testKey).address;
-    const backend = createMemoryBackend();
-    const store = new WalletStore({ backend });
 
     const forbiddenErr: string[] = [];
     const forbiddenCode = await runCli(
       ["wallet", "import", "--private-key", testKey],
       {
-        walletStore: store,
+        walletStore: new WalletStore({ backend: createMemoryBackend() }),
         promptSecret: async () => testKey,
         stdout: () => {},
         stderr: (line) => forbiddenErr.push(line),
@@ -101,7 +112,7 @@ describe("facet wallet CLI & packaging", () => {
 
     const positionalErr: string[] = [];
     const positionalCode = await runCli(["wallet", "import", testKey], {
-      walletStore: store,
+      walletStore: new WalletStore({ backend: createMemoryBackend() }),
       promptSecret: async () => testKey,
       stdout: () => {},
       stderr: (line) => positionalErr.push(line),
@@ -112,19 +123,31 @@ describe("facet wallet CLI & packaging", () => {
 
     const importOut: string[] = [];
     const importCode = await runCli(["wallet", "import"], {
-      walletStore: store,
+      walletStore: new WalletStore({ backend: createMemoryBackend() }),
       promptSecret: async () => testKey,
       stdout: (line) => importOut.push(line),
       stderr: () => {},
     });
     expect(importCode).toBe(0);
-    expect(JSON.parse(importOut[0]!)).toEqual({
+    expect(importOut[0]).toContain("FACET Wallet Imported");
+    expect(importOut[0]).toContain(expectedAddress);
+    expect(() => JSON.parse(importOut[0]!)).toThrow();
+    expect(importOut.join("\n")).not.toContain(testKey.slice(2));
+
+    const importJsonOut: string[] = [];
+    const importJsonCode = await runCli(["wallet", "import", "--json"], {
+      walletStore: new WalletStore({ backend: createMemoryBackend() }),
+      promptSecret: async () => testKey,
+      stdout: (line) => importJsonOut.push(line),
+      stderr: () => {},
+    });
+    expect(importJsonCode).toBe(0);
+    expect(JSON.parse(importJsonOut[0]!)).toEqual({
       address: expectedAddress,
       chainId: 43113,
       network: "eip155:43113",
       imported: true,
     });
-    expect(importOut.join("\n")).not.toContain(testKey.slice(2));
   });
 
   it("publishes @facet-aex/cli with clean tarball contents and Node >=22 support", () => {
@@ -153,6 +176,7 @@ describe("facet wallet CLI & packaging", () => {
     ) as Array<{ files: Array<{ path: string }> }>;
     const paths = packJson[0]!.files.map((entry) => entry.path);
     expect(paths).toContain("dist/cli.js");
+    expect(paths).toContain("dist/cli-format.js");
     expect(paths).toContain("dist/index.js");
     expect(paths).toContain("dist/wallet-store.js");
     expect(paths).toContain("dist/fuji-wallet.js");

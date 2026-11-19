@@ -89,6 +89,7 @@ export interface ReserveOptions {
 export interface ConfirmOptions {
   paymentTxHash: string;
   receiptTxHash?: string;
+  amountAtomic?: bigint | string;
   runId?: string;
   payer?: string;
   providerPayTo?: string;
@@ -137,6 +138,7 @@ export interface SpendHistoryReport {
 }
 
 const ATOMIC_POSITIVE_REGEX = /^[1-9][0-9]*$/u;
+const ATOMIC_NON_NEGATIVE_REGEX = /^(?:0|[1-9][0-9]*)$/u;
 const SAFE_PROFILE_REGEX = /^[a-zA-Z0-9._-]+$/u;
 
 export function snowtraceTxUrl(txHash: string): string {
@@ -175,6 +177,29 @@ export function parsePositiveAtomic(
     throw new SpendLedgerError(
       "INVALID_AMOUNT",
       `${label} must be a positive integer atomic string.`,
+    );
+  }
+  return BigInt(trimmed);
+}
+
+export function parseNonNegativeAtomic(
+  value: bigint | string,
+  label = "amountAtomic",
+): bigint {
+  if (typeof value === "bigint") {
+    if (value < 0n) {
+      throw new SpendLedgerError(
+        "INVALID_AMOUNT",
+        `${label} must be a non-negative integer atomic amount.`,
+      );
+    }
+    return value;
+  }
+  const trimmed = value.trim();
+  if (!ATOMIC_NON_NEGATIVE_REGEX.test(trimmed)) {
+    throw new SpendLedgerError(
+      "INVALID_AMOUNT",
+      `${label} must be a non-negative integer atomic string.`,
     );
   }
   return BigInt(trimmed);
@@ -453,11 +478,16 @@ export class SpendLedger {
           `Spend reservation ${runKey} is already closed (${entry.status}).`,
         );
       }
+      const settledAmount =
+        details.amountAtomic !== undefined
+          ? parseNonNegativeAtomic(details.amountAtomic, "amountAtomic").toString()
+          : undefined;
       if (
         entry.status === "SETTLED" &&
         entry.paymentTxHash === details.paymentTxHash &&
         (!details.receiptTxHash ||
-          entry.receiptTxHash === details.receiptTxHash)
+          entry.receiptTxHash === details.receiptTxHash) &&
+        (settledAmount === undefined || entry.amountAtomic === settledAmount)
       ) {
         return entry;
       }
@@ -466,6 +496,7 @@ export class SpendLedger {
         ...entry,
         status: "SETTLED",
         paymentTxHash: details.paymentTxHash,
+        ...(settledAmount !== undefined ? { amountAtomic: settledAmount } : {}),
         ...(details.receiptTxHash
           ? { receiptTxHash: details.receiptTxHash }
           : {}),
@@ -637,8 +668,14 @@ export function formatSpendHistoryText(
       : inv.runKey;
     const title = inv.facetDisplayName ? ` (${inv.facetDisplayName})` : "";
     lines.push(
-      `- [${inv.status}] ${label}${title} | ${inv.amountFormatted} fUSD | ${inv.createdAt}`,
+      `- [${inv.status}] ${label}${title} | ${inv.amountFormatted} fUSD (${inv.amountAtomic} atomic) | ${inv.createdAt}`,
     );
+    if (inv.runId) {
+      lines.push(`  runId: ${inv.runId}`);
+    }
+    if (inv.providerPayTo) {
+      lines.push(`  payTo: ${inv.providerPayTo}`);
+    }
     if (inv.paymentSnowtraceUrl) {
       lines.push(`  payment: ${inv.paymentSnowtraceUrl}`);
     }

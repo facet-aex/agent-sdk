@@ -10,10 +10,23 @@ import {
   SpendLedger,
   WalletStore,
   WalletStoreError,
+  buildFacetMcpSpec,
   defaultPolicyStorePath,
   defaultSpendLedgerPath,
+  formatCliHelpText,
+  formatFacetInspectText,
+  formatFacetSearchText,
+  formatMcpInstallText,
+  formatPolicyGrantText,
+  formatPolicyPruneText,
+  formatPolicyRevokeText,
+  formatPolicyShowText,
+  formatPublishActorText,
   formatSpendHistory,
   formatSpendHistoryText,
+  formatWalletCreateText,
+  formatWalletImportText,
+  formatWalletStatusText,
   installMcpClient,
   isMcpClientName,
   isValidFacetName,
@@ -50,7 +63,9 @@ const FORBIDDEN_KEY_FLAGS = [
 
 function argValue(args: string[], flag: string): string | undefined {
   const index = args.indexOf(flag);
-  return index >= 0 ? args[index + 1] : undefined;
+  if (index < 0) return undefined;
+  const next = args[index + 1];
+  return next !== undefined && !next.startsWith("--") ? next : undefined;
 }
 
 function assertNoSecretInArgv(args: string[]): void {
@@ -192,9 +207,25 @@ export async function runCli(
   const stdout = deps.stdout ?? ((line: string) => console.log(line));
   const stderr = deps.stderr ?? ((line: string) => console.error(line));
   const env = deps.env ?? process.env;
-  const [command, ...rest] = argv;
+  const jsonOutput = argv.includes("--json");
+  const cleanArgv = argv.filter((arg) => arg !== "--json" && arg !== "--text");
+  const [command, ...rest] = cleanArgv;
+
+  const emit = (data: unknown, formatText: () => string): void => {
+    stdout(jsonOutput ? JSON.stringify(data, null, 2) : formatText());
+  };
 
   try {
+    if (!command) {
+      stderr(formatCliHelpText());
+      return 1;
+    }
+
+    if (command === "--help" || command === "-h" || command === "help") {
+      stdout(formatCliHelpText());
+      return 0;
+    }
+
     if (command === "wallet") {
       const [subcommand, ...subRest] = rest;
       assertNoSecretInArgv(subRest);
@@ -204,7 +235,7 @@ export async function runCli(
 
       if (subcommand === "create") {
         const result = await walletStore.createWallet();
-        stdout(JSON.stringify(result, null, 2));
+        emit(result, () => formatWalletCreateText(profile, result));
         return 0;
       }
 
@@ -214,7 +245,7 @@ export async function runCli(
           "Enter Fuji private key (0x..., input hidden): ",
         );
         const result = await walletStore.importWallet(rawKey);
-        stdout(JSON.stringify(result, null, 2));
+        emit(result, () => formatWalletImportText(profile, result));
         return 0;
       }
 
@@ -224,11 +255,13 @@ export async function runCli(
           ...(deps.fujiClient ? { client: deps.fujiClient } : {}),
           ...(env.FACET_FUJI_RPC_URL ? { rpcUrl: env.FACET_FUJI_RPC_URL } : {}),
         });
-        stdout(JSON.stringify({ profile, ...status }, null, 2));
+        emit({ profile, ...status }, () =>
+          formatWalletStatusText(profile, status),
+        );
         return 0;
       }
 
-      stderr("Usage: facet wallet <create|import|status> [--profile <name>]");
+      stderr("Usage: facet wallet <create|import|status> [--profile <name>] [--json]");
       return 1;
     }
 
@@ -263,15 +296,13 @@ export async function runCli(
           ...filter,
         });
         const report = formatSpendHistory(entries);
-        if (subRest.includes("--text")) {
-          stdout(formatSpendHistoryText(profile, report));
-        } else {
-          stdout(JSON.stringify({ profile, ...report }, null, 2));
-        }
+        emit({ profile, ...report }, () =>
+          formatSpendHistoryText(profile, report),
+        );
         return 0;
       }
       stderr(
-        "Usage: facet spend history [--profile <name>] [--status SETTLED|PENDING|RELEASED|FAILED] [--day YYYY-MM-DD] [--provider <provider>] [--facet <facet-name>] [--version <semver>] [--text]",
+        "Usage: facet spend history [--profile <name>] [--status SETTLED|PENDING|RELEASED|FAILED] [--day YYYY-MM-DD] [--provider <provider>] [--facet <facet-name>] [--version <semver>] [--json]",
       );
       return 1;
     }
@@ -307,7 +338,7 @@ export async function runCli(
 
         if (!facetArg) {
           stderr(
-            "Usage: facet policy grant (--facet <provider/facet-name> | --provider <provider> --facet <facet-name>) [--version <semver>] [--max-per-run 1000] [--daily-cap 10000] [--expires <ISO8601>] [--profile <name>]",
+            "Usage: facet policy grant (--facet <provider/facet-name> | --provider <provider> --facet <facet-name>) [--version <semver>] [--max-per-run 1000] [--daily-cap 10000] [--expires <ISO8601>] [--profile <name>] [--json]",
           );
           return 1;
         }
@@ -337,14 +368,14 @@ export async function runCli(
           ...(dailyCap ? { dailyCapAtomic: dailyCap } : {}),
           ...(expires ? { expiresAt: expires } : {}),
         });
-        stdout(JSON.stringify({ profile, policy }, null, 2));
+        emit({ profile, policy }, () => formatPolicyGrantText(profile, policy));
         return 0;
       }
 
       if (subcommand === "show") {
         const filter = parseOptionalPolicyFilter(subRest);
         const result = await policyStore.show(filter);
-        stdout(JSON.stringify(result, null, 2));
+        emit(result, () => formatPolicyShowText(result));
         return 0;
       }
 
@@ -353,7 +384,7 @@ export async function runCli(
         const filter = parseOptionalPolicyFilter(subRest);
         if (!all && !filter.provider && !filter.facetName && !filter.version) {
           stderr(
-            "Usage: facet policy revoke (([--provider <provider>] --facet <provider/facet-name|facet-name>) [--version <semver>] | --all) [--profile <name>]",
+            "Usage: facet policy revoke (([--provider <provider>] --facet <provider/facet-name|facet-name>) [--version <semver>] | --all) [--profile <name>] [--json]",
           );
           return 1;
         }
@@ -361,7 +392,7 @@ export async function runCli(
           ...filter,
           ...(all ? { all: true } : {}),
         });
-        stdout(JSON.stringify(result, null, 2));
+        emit(result, () => formatPolicyRevokeText(profile, result));
         return 0;
       }
 
@@ -372,12 +403,12 @@ export async function runCli(
           ...filter,
           ...(all ? { all: true } : {}),
         });
-        stdout(JSON.stringify(result, null, 2));
+        emit(result, () => formatPolicyPruneText(profile, result));
         return 0;
       }
 
       stderr(
-        "Usage: facet policy <grant|show|revoke|prune> [--profile <name>]",
+        "Usage: facet policy <grant|show|revoke|prune> [--profile <name>] [--json]",
       );
       return 1;
     }
@@ -389,7 +420,7 @@ export async function runCli(
       const mcpVersion = argValue(subRest, "--mcp-version");
       if (!clientArg || !isMcpClientName(clientArg)) {
         stderr(
-          "Usage: facet mcp <install|config> <codex|claude|antigravity> [--profile <name>]",
+          "Usage: facet mcp <install|config> <codex|claude|antigravity> [--profile <name>] [--json]",
         );
         return 1;
       }
@@ -399,16 +430,22 @@ export async function runCli(
         ...(mcpVersion ? { mcpVersion } : {}),
       };
       if (subcommand === "config") {
-        stdout(renderMcpConfigSnippet(clientArg, mcpOptions));
+        const spec = buildFacetMcpSpec(mcpOptions);
+        emit({ client: clientArg, profile, spec }, () =>
+          renderMcpConfigSnippet(clientArg, mcpOptions),
+        );
         return 0;
       }
       if (subcommand === "install") {
-        const result = await installMcpClient(clientArg, mcpOptions);
-        stdout(JSON.stringify(result, null, 2));
+        const result = await installMcpClient(clientArg, {
+          ...mcpOptions,
+          ...(env.HOME ? { homeDir: env.HOME } : {}),
+        });
+        emit(result, () => formatMcpInstallText(result));
         return 0;
       }
       stderr(
-        "Usage: facet mcp <install|config> <codex|claude|antigravity> [--profile <name>]",
+        "Usage: facet mcp <install|config> <codex|claude|antigravity> [--profile <name>] [--json]",
       );
       return 1;
     }
@@ -424,7 +461,7 @@ export async function runCli(
       const type = rawType as FacetType | undefined;
       const category = argValue(rest, "--category");
       const facets = await client.searchFacets({ query, type, category });
-      stdout(JSON.stringify({ facets }, null, 2));
+      emit({ facets }, () => formatFacetSearchText(facets));
       return 0;
     }
 
@@ -437,7 +474,7 @@ export async function runCli(
       const versionArg = argValue(rest, "--version");
       if (!facetRefArg) {
         stderr(
-          "Usage: facet inspect (<provider/facet-name> | --provider <provider> --facet <facet-name>) [--version <semver>]",
+          "Usage: facet inspect (<provider/facet-name> | --provider <provider> --facet <facet-name>) [--version <semver>] [--json]",
         );
         return 1;
       }
@@ -449,7 +486,7 @@ export async function runCli(
         stderr(`NOT_FOUND: Facet ${facetRefArg} not found.`);
         return 1;
       }
-      stdout(JSON.stringify({ facet }, null, 2));
+      emit({ facet }, () => formatFacetInspectText(facet));
       return 0;
     }
 
@@ -460,13 +497,11 @@ export async function runCli(
         FacetClient["publishActor"]
       >[0];
       const facet = await client.publishActor(raw);
-      stdout(JSON.stringify({ facet }, null, 2));
+      emit({ facet }, () => formatPublishActorText(facet));
       return 0;
     }
 
-    stderr(
-      "Usage: facet <wallet <create|import|status> | policy <grant|show|revoke|prune> | spend history | mcp <install|config> <codex|claude|antigravity> | search [query] [--type API|ACTOR|AGENT] | inspect <provider/facet-name> [--version <semver>] | publish-actor --file <json>>",
-    );
+    stderr(formatCliHelpText());
     return 1;
   } catch (error) {
     stderr(formatCliError(error));

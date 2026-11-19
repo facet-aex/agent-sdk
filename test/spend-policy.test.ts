@@ -276,6 +276,33 @@ describe("SpendPolicy Option B store & authorization", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     try {
+      const grantTextOut: string[] = [];
+      const grantTextCode = await runCli(
+        [
+          "policy",
+          "grant",
+          "--facet",
+          "tai-hung-dev/echo-actor",
+          "--profile",
+          "research",
+        ],
+        {
+          env: {
+            ...process.env,
+            FACET_CONFIG_DIR: dir,
+            FACET_CONTROL_API_URL: "https://facet.briandev.space",
+          },
+          stdout: (line) => grantTextOut.push(line),
+          stderr: (line) => {
+            throw new SpendPolicyError("POLICY_INVALID", line);
+          },
+        },
+      );
+      expect(grantTextCode).toBe(0);
+      expect(grantTextOut[0]).toContain("FACET Policy Granted (profile: research)");
+      expect(grantTextOut[0]).toContain("tai-hung-dev/echo-actor@1.0.0");
+      expect(() => JSON.parse(grantTextOut[0]!)).toThrow();
+
       const grantOut: string[] = [];
       const grantCode = await runCli(
         [
@@ -285,6 +312,7 @@ describe("SpendPolicy Option B store & authorization", () => {
           "tai-hung-dev/echo-actor",
           "--profile",
           "research",
+          "--json",
         ],
         {
           env: {
@@ -316,6 +344,27 @@ describe("SpendPolicy Option B store & authorization", () => {
       expect(granted.policy.facetFullName).toBeUndefined();
       expect(granted.policy.displayVersion).toBeUndefined();
 
+      const showTextOut: string[] = [];
+      const showTextCode = await runCli(
+        [
+          "policy",
+          "show",
+          "--provider",
+          "tai-hung-dev",
+          "--facet",
+          "echo-actor",
+          "--profile",
+          "research",
+        ],
+        {
+          env: { ...process.env, FACET_CONFIG_DIR: dir },
+          stdout: (line) => showTextOut.push(line),
+        },
+      );
+      expect(showTextCode).toBe(0);
+      expect(showTextOut[0]).toContain("[ACTIVE] tai-hung-dev/echo-actor@1.0.0");
+      expect(() => JSON.parse(showTextOut[0]!)).toThrow();
+
       const showOut: string[] = [];
       const showCode = await runCli(
         [
@@ -327,6 +376,7 @@ describe("SpendPolicy Option B store & authorization", () => {
           "echo-actor",
           "--profile",
           "research",
+          "--json",
         ],
         {
           env: { ...process.env, FACET_CONFIG_DIR: dir },
@@ -360,11 +410,11 @@ describe("SpendPolicy Option B store & authorization", () => {
         },
       );
       expect(revokeCode).toBe(0);
-      expect(JSON.parse(revokeOut[0]!)).toMatchObject({ revoked: true, count: 1 });
+      expect(revokeOut[0]).toBe("Revoked 1 policy/policies in profile 'research'.");
 
       const pruneOut: string[] = [];
       const pruneCode = await runCli(
-        ["policy", "prune", "--profile", "research"],
+        ["policy", "prune", "--profile", "research", "--json"],
         {
           env: { ...process.env, FACET_CONFIG_DIR: dir },
           stdout: (line) => pruneOut.push(line),

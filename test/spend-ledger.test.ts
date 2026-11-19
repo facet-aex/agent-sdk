@@ -116,9 +116,23 @@ describe("SpendLedger & Task B6 spend history", () => {
     expect(settledInvoice.paymentSnowtraceUrl).toBe(`${SNOWTRACE_TX_BASE}${paymentTx}`);
     expect(settledInvoice.receiptSnowtraceUrl).toBe(`${SNOWTRACE_TX_BASE}${receiptTx}`);
 
+    const cliTextOut: string[] = [];
+    const textCode = await runCli(
+      ["spend", "history", "--profile", "default", "--status", "SETTLED"],
+      {
+        env: { ...process.env, FACET_SPEND_LEDGER_PATH: ledger.filePath },
+        stdout: (line) => cliTextOut.push(line),
+      },
+    );
+    expect(textCode).toBe(0);
+    expect(cliTextOut[0]).toContain("FACET Spend History (profile: default)");
+    expect(cliTextOut[0]).toContain("0.001000 fUSD (1000 atomic)");
+    expect(cliTextOut[0]).toContain(`${SNOWTRACE_TX_BASE}${receiptTx}`);
+    expect(() => JSON.parse(cliTextOut[0]!)).toThrow();
+
     const cliOut: string[] = [];
     const code = await runCli(
-      ["spend", "history", "--profile", "default", "--status", "SETTLED"],
+      ["spend", "history", "--profile", "default", "--status", "SETTLED", "--json"],
       {
         env: { ...process.env, FACET_SPEND_LEDGER_PATH: ledger.filePath },
         stdout: (line) => cliOut.push(line),
@@ -135,6 +149,62 @@ describe("SpendLedger & Task B6 spend history", () => {
     expect(cliBody.invoices[0]?.receiptSnowtraceUrl).toBe(
       `${SNOWTRACE_TX_BASE}${receiptTx}`,
     );
+  });
+
+  it("reconciles PAY_PER_RESULT escrow reservation to actual settled amountAtomic and frees unused cap", async () => {
+    const dir = await makeTempDir();
+    const ledger = new SpendLedger({ filePath: join(dir, "ledger.json") });
+    const now = new Date("2026-11-19T10:30:00Z");
+
+    const baseOpts = {
+      dailyCapAtomic: "10000",
+      provider: "studio-c4fc0882e",
+      facetName: "vn-tech-news-actor",
+      facetDisplayName: "VN Tech & Macro News Extractor",
+      version: "1.0.0",
+      facetType: "ACTOR" as const,
+      now,
+    };
+
+    const reserved = await ledger.reserve(
+      "studio-c4fc0882e/vn-tech-news-actor@1.0.0:pay-per-result-1",
+      "10000",
+      baseOpts,
+    );
+    expect(reserved.amountAtomic).toBe("10000");
+
+    const paymentTx = "0x" + "9".repeat(64);
+    const receiptTx = "0x" + "7".repeat(64);
+    const settled = await ledger.confirm(
+      "studio-c4fc0882e/vn-tech-news-actor@1.0.0:pay-per-result-1",
+      {
+        paymentTxHash: paymentTx,
+        receiptTxHash: receiptTx,
+        amountAtomic: "500",
+        runId: "cfa3c216-b707-47c8-b6aa-e53a3b9fa18c",
+        payer: "0xfa8ccb3c5145fca08f22675ea740e89b1d3a317f",
+        providerPayTo: "0x5189c4c1a14dc1a6845425b6c44d2b40c0b4f39b",
+        now,
+      },
+    );
+    expect(settled.amountAtomic).toBe("500");
+
+    // Since only 500 was actually settled (9500 refunded by escrow), another 9500 fits under the 10000 daily cap
+    const nextRun = await ledger.reserve(
+      "studio-c4fc0882e/vn-tech-news-actor@1.0.0:pay-per-result-2",
+      "9500",
+      baseOpts,
+    );
+    expect(nextRun.status).toBe("PENDING");
+
+    const out: string[] = [];
+    const code = await runCli(["spend", "history", "--status", "SETTLED"], {
+      env: { ...process.env, FACET_SPEND_LEDGER_PATH: ledger.filePath },
+      stdout: (line) => out.push(line),
+    });
+    expect(code).toBe(0);
+    expect(out[0]).toContain("Settled: 1 (0.000500 fUSD)");
+    expect(out[0]).toContain("0.000500 fUSD (500 atomic)");
   });
 
   it("prevents concurrent OS processes from overspending the same daily cap", async () => {

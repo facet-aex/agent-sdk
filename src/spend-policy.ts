@@ -84,6 +84,11 @@ export interface PublicFacetRecord {
   facetDisplayName: string;
   version: string;
   facetType: FacetType;
+  description?: string;
+  category?: string;
+  tags?: string[];
+  inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
   pricing?: {
     model: "PAY_PER_RUN" | "PAY_PER_RESULT";
     priceAtomic: string;

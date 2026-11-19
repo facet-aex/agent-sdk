@@ -59,6 +59,7 @@ export {
   defaultSpendLedgerPath,
   formatSpendHistory,
   formatSpendHistoryText,
+  parseNonNegativeAtomic,
   parsePositiveAtomic,
   snowtraceTxUrl,
   utcDayKey,
@@ -70,6 +71,20 @@ export {
   type SpendLedgerEntry,
   type SpendLedgerErrorCode,
 } from "./spend-ledger.js";
+export {
+  formatCliHelpText,
+  formatFacetInspectText,
+  formatFacetSearchText,
+  formatMcpInstallText,
+  formatPolicyGrantText,
+  formatPolicyPruneText,
+  formatPolicyRevokeText,
+  formatPolicyShowText,
+  formatPublishActorText,
+  formatWalletCreateText,
+  formatWalletImportText,
+  formatWalletStatusText,
+} from "./cli-format.js";
 export {
   DEFAULT_POLICY_DAILY_CAP_ATOMIC,
   DEFAULT_POLICY_MAX_PER_RUN_ATOMIC,

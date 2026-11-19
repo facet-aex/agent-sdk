@@ -166,5 +166,36 @@ describe("MCP config & client installers", () => {
     });
     expect(code).toBe(0);
     expect(out.join("\n")).toContain("claude mcp add --scope user facet");
+
+    const jsonConfigOut: string[] = [];
+    expect(
+      await runCli(["mcp", "config", "antigravity", "--json"], {
+        stdout: (line) => jsonConfigOut.push(line),
+      }),
+    ).toBe(0);
+    expect(JSON.parse(jsonConfigOut[0]!)).toMatchObject({
+      client: "antigravity",
+      spec: { name: "facet", command: "npx" },
+    });
+
+    const installHome = await makeTempHome();
+    const installTextOut: string[] = [];
+    expect(
+      await runCli(
+        ["mcp", "install", "antigravity"],
+        {
+          env: { ...process.env, HOME: installHome },
+          stdout: (line) => installTextOut.push(line),
+        },
+      ),
+    ).toBe(0);
+    expect(installTextOut[0]).toContain("FACET MCP Installed (antigravity)");
+    expect(() => JSON.parse(installTextOut[0]!)).toThrow();
+
+    const helpOut: string[] = [];
+    expect(
+      await runCli(["--help"], { stdout: (line) => helpOut.push(line) }),
+    ).toBe(0);
+    expect(helpOut[0]).toContain("--json");
   });
 });
