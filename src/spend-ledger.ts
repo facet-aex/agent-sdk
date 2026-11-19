@@ -11,6 +11,18 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { FacetType } from "./identifiers.js";
+
+export const SNOWTRACE_TX_BASE = "https://testnet.snowtrace.io/tx/" as const;
+const LEDGER_FUJI_CHAIN_ID = 43113 as const;
+const LEDGER_FUSD_DECIMALS = 6 as const;
+const LEDGER_FUSD_SYMBOL = "fUSD" as const;
+
+function formatAtomicFusd(atomic: bigint): string {
+  const whole = atomic / 1_000_000n;
+  const fraction = (atomic % 1_000_000n).toString().padStart(6, "0");
+  return `${whole.toString()}.${fraction}`;
+}
 
 export type SpendEntryStatus = "PENDING" | "SETTLED" | "RELEASED" | "FAILED";
 
@@ -36,8 +48,11 @@ export class SpendLedgerError extends Error {
 
 export interface SpendLedgerEntry {
   runKey: string;
-  facetId?: string;
-  facetVersionId?: string;
+  provider?: string;
+  facetName?: string;
+  facetDisplayName?: string;
+  version?: string;
+  facetType?: FacetType;
   runId?: string;
   amountAtomic: string;
   status: SpendEntryStatus;
@@ -45,7 +60,7 @@ export interface SpendLedgerEntry {
   paymentTxHash?: string;
   receiptTxHash?: string;
   payer?: string;
-  creatorPayTo?: string;
+  providerPayTo?: string;
   errorCode?: string;
   createdAt: string;
   updatedAt: string;
@@ -60,11 +75,14 @@ interface SpendLedgerFile {
 export interface ReserveOptions {
   dailyCapAtomic?: bigint | string;
   maxPerRunAtomic?: bigint | string;
-  facetId?: string;
-  facetVersionId?: string;
+  provider?: string;
+  facetName?: string;
+  facetDisplayName?: string;
+  version?: string;
+  facetType?: FacetType;
   runId?: string;
   payer?: string;
-  creatorPayTo?: string;
+  providerPayTo?: string;
   now?: Date;
 }
 
@@ -73,12 +91,57 @@ export interface ConfirmOptions {
   receiptTxHash?: string;
   runId?: string;
   payer?: string;
-  creatorPayTo?: string;
+  providerPayTo?: string;
   now?: Date;
+}
+
+export interface SpendHistoryInvoice {
+  runKey: string;
+  runId?: string;
+  provider?: string;
+  facetName?: string;
+  facetDisplayName?: string;
+  version?: string;
+  facetType?: FacetType;
+  status: SpendEntryStatus;
+  utcDay: string;
+  amountAtomic: string;
+  amountFormatted: string;
+  assetSymbol: typeof LEDGER_FUSD_SYMBOL;
+  decimals: typeof LEDGER_FUSD_DECIMALS;
+  chainId: typeof LEDGER_FUJI_CHAIN_ID;
+  payer?: string;
+  providerPayTo?: string;
+  paymentTxHash?: string;
+  paymentSnowtraceUrl?: string;
+  receiptTxHash?: string;
+  receiptSnowtraceUrl?: string;
+  errorCode?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SpendHistoryReport {
+  summary: {
+    totalCount: number;
+    settledCount: number;
+    pendingCount: number;
+    releasedCount: number;
+    failedCount: number;
+    totalSettledAtomic: string;
+    totalSettledFormatted: string;
+    totalPendingAtomic: string;
+    totalPendingFormatted: string;
+  };
+  invoices: SpendHistoryInvoice[];
 }
 
 const ATOMIC_POSITIVE_REGEX = /^[1-9][0-9]*$/u;
 const SAFE_PROFILE_REGEX = /^[a-zA-Z0-9._-]+$/u;
+
+export function snowtraceTxUrl(txHash: string): string {
+  return `${SNOWTRACE_TX_BASE}${txHash}`;
+}
 
 function resolveLedgerProfile(
   explicit?: string,
@@ -187,7 +250,6 @@ export class SpendLedger {
             continue;
           }
         } catch {
-          // Lock disappeared concurrently; retry immediately.
           continue;
         }
 
@@ -300,11 +362,18 @@ export class SpendLedger {
       }
 
       if (dailyCap !== undefined) {
+        const hasScopedTarget = Boolean(
+          options.provider && options.facetName && options.version,
+        );
         const committedToday = ledger.entries.reduce((sum, entry) => {
           if (
-            options.facetVersionId &&
-            entry.facetVersionId &&
-            entry.facetVersionId !== options.facetVersionId
+            hasScopedTarget &&
+            entry.provider &&
+            entry.facetName &&
+            entry.version &&
+            (entry.provider !== options.provider ||
+              entry.facetName !== options.facetName ||
+              entry.version !== options.version)
           ) {
             return sum;
           }
@@ -325,16 +394,21 @@ export class SpendLedger {
       const timestamp = now.toISOString();
       const nextEntry: SpendLedgerEntry = {
         runKey,
-        ...(options.facetId ? { facetId: options.facetId } : {}),
-        ...(options.facetVersionId
-          ? { facetVersionId: options.facetVersionId }
+        ...(options.provider ? { provider: options.provider } : {}),
+        ...(options.facetName ? { facetName: options.facetName } : {}),
+        ...(options.facetDisplayName
+          ? { facetDisplayName: options.facetDisplayName }
           : {}),
+        ...(options.version ? { version: options.version } : {}),
+        ...(options.facetType ? { facetType: options.facetType } : {}),
         ...(options.runId ? { runId: options.runId } : {}),
         amountAtomic: amountStr,
         status: "PENDING",
         utcDay: currentDay,
         ...(options.payer ? { payer: options.payer } : {}),
-        ...(options.creatorPayTo ? { creatorPayTo: options.creatorPayTo } : {}),
+        ...(options.providerPayTo
+          ? { providerPayTo: options.providerPayTo }
+          : {}),
         createdAt: existing?.createdAt ?? timestamp,
         updatedAt: timestamp,
       };
@@ -397,7 +471,9 @@ export class SpendLedger {
           : {}),
         ...(details.runId ? { runId: details.runId } : {}),
         ...(details.payer ? { payer: details.payer } : {}),
-        ...(details.creatorPayTo ? { creatorPayTo: details.creatorPayTo } : {}),
+        ...(details.providerPayTo
+          ? { providerPayTo: details.providerPayTo }
+          : {}),
         updatedAt: now.toISOString(),
       };
       ledger.entries[index] = updated;
@@ -449,19 +525,126 @@ export class SpendLedger {
   async list(filter?: {
     utcDay?: string;
     status?: SpendEntryStatus;
-    facetVersionId?: string;
+    provider?: string;
+    facetName?: string;
+    version?: string;
   }): Promise<SpendLedgerEntry[]> {
     const ledger = await this.readLedger();
     return ledger.entries.filter((entry) => {
       if (filter?.utcDay && entry.utcDay !== filter.utcDay) return false;
       if (filter?.status && entry.status !== filter.status) return false;
-      if (
-        filter?.facetVersionId &&
-        entry.facetVersionId !== filter.facetVersionId
-      ) {
-        return false;
-      }
+      if (filter?.provider && entry.provider !== filter.provider) return false;
+      if (filter?.facetName && entry.facetName !== filter.facetName) return false;
+      if (filter?.version && entry.version !== filter.version) return false;
       return true;
     });
   }
+}
+
+export function formatSpendHistory(
+  entries: SpendLedgerEntry[],
+): SpendHistoryReport {
+  const ordered = [...entries].sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt),
+  );
+
+  let settledCount = 0;
+  let pendingCount = 0;
+  let releasedCount = 0;
+  let failedCount = 0;
+  let totalSettledAtomic = 0n;
+  let totalPendingAtomic = 0n;
+
+  const invoices: SpendHistoryInvoice[] = ordered.map((entry) => {
+    const amount = BigInt(entry.amountAtomic);
+    if (entry.status === "SETTLED") {
+      settledCount += 1;
+      totalSettledAtomic += amount;
+    } else if (entry.status === "PENDING") {
+      pendingCount += 1;
+      totalPendingAtomic += amount;
+    } else if (entry.status === "RELEASED") {
+      releasedCount += 1;
+    } else if (entry.status === "FAILED") {
+      failedCount += 1;
+    }
+
+    const invoice: SpendHistoryInvoice = {
+      runKey: entry.runKey,
+      ...(entry.runId ? { runId: entry.runId } : {}),
+      ...(entry.provider ? { provider: entry.provider } : {}),
+      ...(entry.facetName ? { facetName: entry.facetName } : {}),
+      ...(entry.facetDisplayName
+        ? { facetDisplayName: entry.facetDisplayName }
+        : {}),
+      ...(entry.version ? { version: entry.version } : {}),
+      ...(entry.facetType ? { facetType: entry.facetType } : {}),
+      status: entry.status,
+      utcDay: entry.utcDay,
+      amountAtomic: entry.amountAtomic,
+      amountFormatted: formatAtomicFusd(amount),
+      assetSymbol: LEDGER_FUSD_SYMBOL,
+      decimals: LEDGER_FUSD_DECIMALS,
+      chainId: LEDGER_FUJI_CHAIN_ID,
+      ...(entry.payer ? { payer: entry.payer } : {}),
+      ...(entry.providerPayTo ? { providerPayTo: entry.providerPayTo } : {}),
+      ...(entry.paymentTxHash
+        ? {
+            paymentTxHash: entry.paymentTxHash,
+            paymentSnowtraceUrl: snowtraceTxUrl(entry.paymentTxHash),
+          }
+        : {}),
+      ...(entry.status === "SETTLED" && entry.receiptTxHash
+        ? {
+            receiptTxHash: entry.receiptTxHash,
+            receiptSnowtraceUrl: snowtraceTxUrl(entry.receiptTxHash),
+          }
+        : {}),
+      ...(entry.errorCode ? { errorCode: entry.errorCode } : {}),
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+    };
+    return invoice;
+  });
+
+  return {
+    summary: {
+      totalCount: entries.length,
+      settledCount,
+      pendingCount,
+      releasedCount,
+      failedCount,
+      totalSettledAtomic: totalSettledAtomic.toString(),
+      totalSettledFormatted: formatAtomicFusd(totalSettledAtomic),
+      totalPendingAtomic: totalPendingAtomic.toString(),
+      totalPendingFormatted: formatAtomicFusd(totalPendingAtomic),
+    },
+    invoices,
+  };
+}
+
+export function formatSpendHistoryText(
+  profile: string,
+  report: SpendHistoryReport,
+): string {
+  const lines = [
+    `FACET Spend History (profile: ${profile})`,
+    `Settled: ${report.summary.settledCount} (${report.summary.totalSettledFormatted} fUSD) | Pending: ${report.summary.pendingCount} (${report.summary.totalPendingFormatted} fUSD) | Released: ${report.summary.releasedCount} | Failed: ${report.summary.failedCount}`,
+  ];
+  for (const inv of report.invoices) {
+    const label = inv.provider && inv.facetName
+      ? `${inv.provider}/${inv.facetName}@${inv.version ?? "?"}`
+      : inv.runKey;
+    const title = inv.facetDisplayName ? ` (${inv.facetDisplayName})` : "";
+    lines.push(
+      `- [${inv.status}] ${label}${title} | ${inv.amountFormatted} fUSD | ${inv.createdAt}`,
+    );
+    if (inv.paymentSnowtraceUrl) {
+      lines.push(`  payment: ${inv.paymentSnowtraceUrl}`);
+    }
+    if (inv.receiptSnowtraceUrl) {
+      lines.push(`  receipt: ${inv.receiptSnowtraceUrl}`);
+    }
+  }
+  return lines.join("\n");
 }

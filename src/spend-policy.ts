@@ -9,6 +9,13 @@ import {
   FUJI_NETWORK,
   FUSD_ASSET_ADDRESS,
 } from "./fuji-wallet.js";
+import {
+  isValidFacetName,
+  isValidFacetType,
+  isValidSemver,
+  isValidUsername,
+  type FacetType,
+} from "./identifiers.js";
 import { parsePositiveAtomic } from "./spend-ledger.js";
 import { resolveProfileName } from "./wallet-store.js";
 
@@ -72,18 +79,11 @@ export class SpendPolicyError extends Error {
 }
 
 export interface PublicFacetRecord {
-  id: string;
-  versionId: string;
-  slug: string;
-  fullName?: string;
-  name: string;
-  displayVersion?: string;
-  provider?: {
-    id: string;
-    name: string;
-    slug: string;
-  };
-  facetType?: "EXTERNAL_HTTP_API" | "HOSTED_ACTOR" | "AUTONOMOUS_AGENT";
+  provider: string;
+  facetName: string;
+  facetDisplayName: string;
+  version: string;
+  facetType: FacetType;
   pricing?: {
     model: "PAY_PER_RUN" | "PAY_PER_RESULT";
     priceAtomic: string;
@@ -108,19 +108,16 @@ export interface PublicFacetRecord {
 }
 
 export interface SpendPolicyGrant {
-  profile: string;
-  facetId: string;
-  facetSlug: string;
-  facetFullName: string;
+  provider: string;
   facetName: string;
-  displayVersion?: string;
-  versionId: string;
-  facetType: "EXTERNAL_HTTP_API" | "HOSTED_ACTOR" | "AUTONOMOUS_AGENT";
+  facetDisplayName: string;
+  version: string;
+  facetType: FacetType;
   chainId: 43113;
   network: "eip155:43113";
   assetAddress: string;
   settlementContract: string;
-  creatorPayTo: string;
+  providerPayTo: string;
   pricingModel: "PAY_PER_RUN" | "PAY_PER_RESULT";
   pinnedPriceAtomic: string;
   maxPerRunAtomic: string;
@@ -133,9 +130,32 @@ export interface SpendPolicyGrant {
 }
 
 interface PolicyFile {
-  version: 1;
+  version: 2;
   dayBoundary: "UTC";
   policies: SpendPolicyGrant[];
+}
+
+export interface GrantPolicyInput {
+  facet: PublicFacetRecord;
+  provider?: string;
+  facetName?: string;
+  version?: string;
+  maxPerRunAtomic?: string;
+  dailyCapAtomic?: string;
+  expiresAt?: string;
+  now?: Date;
+}
+
+export interface AuthorizeChallengeInput {
+  provider: string;
+  facetName: string;
+  version: string;
+  chainId: number;
+  assetAddress: string;
+  settlementPayTo: string;
+  providerPayTo?: string;
+  amountAtomic: string;
+  now?: Date;
 }
 
 export function defaultPolicyStorePath(
@@ -153,8 +173,13 @@ export function defaultPolicyStorePath(
 }
 
 function assertVerifiedRegistry(facet: PublicFacetRecord): string {
-  const facetType = facet.facetType ?? "EXTERNAL_HTTP_API";
-  if (facetType === "HOSTED_ACTOR") {
+  if (!isValidFacetType(facet.facetType)) {
+    throw new SpendPolicyError(
+      "POLICY_INVALID",
+      `Unsupported facetType '${String(facet.facetType)}'. Expected API, ACTOR, or AGENT.`,
+    );
+  }
+  if (facet.facetType === "ACTOR") {
     if (
       facet.actorMeta?.registryVerified !== true ||
       !facet.actorMeta.registryTxHash ||
@@ -162,12 +187,12 @@ function assertVerifiedRegistry(facet: PublicFacetRecord): string {
     ) {
       throw new SpendPolicyError(
         "UNVERIFIED_FACET_REGISTRY",
-        "Refusing policy grant: Hosted Actor does not have a verified Fuji registry record.",
+        "Refusing policy grant: Actor does not have a verified Fuji registry record.",
       );
     }
     return facet.actorMeta.registryTxHash;
   }
-  if (facetType === "AUTONOMOUS_AGENT") {
+  if (facet.facetType === "AGENT") {
     if (
       facet.agentMeta?.registryVerified !== true ||
       !facet.agentMeta.registryTxHash ||
@@ -175,44 +200,22 @@ function assertVerifiedRegistry(facet: PublicFacetRecord): string {
     ) {
       throw new SpendPolicyError(
         "UNVERIFIED_FACET_REGISTRY",
-        "Refusing policy grant: Autonomous Agent does not have a verified Fuji registry record.",
+        "Refusing policy grant: Agent does not have a verified Fuji registry record.",
       );
     }
     return facet.agentMeta.registryTxHash;
   }
   throw new SpendPolicyError(
     "UNVERIFIED_FACET_REGISTRY",
-    `Refusing policy grant: Facet type ${facetType} lacks a verified on-chain registry record.`,
+    `Refusing policy grant: Facet type ${facet.facetType} lacks a verified on-chain registry record.`,
   );
 }
 
-export interface GrantPolicyInput {
-  facet: PublicFacetRecord;
-  facetId?: string;
-  versionId?: string;
-  maxPerRunAtomic?: bigint | string;
-  dailyCapAtomic?: bigint | string;
-  expiresAt?: string;
-  profile?: string;
-  now?: Date;
-}
-
-export interface AuthorizeChallengeInput {
-  facetId: string;
-  facetVersionId: string;
-  chainId: number;
-  assetAddress: string;
-  settlementPayTo: string;
-  creatorPayTo?: string;
-  amountAtomic: bigint | string;
-  now?: Date;
-}
-
 export class PolicyStore {
-  public readonly filePath: string;
   public readonly profile: string;
+  public readonly filePath: string;
 
-  constructor(options?: { filePath?: string; profile?: string }) {
+  constructor(options?: { profile?: string; filePath?: string }) {
     this.profile = resolveProfileName(options?.profile);
     this.filePath =
       options?.filePath ?? defaultPolicyStorePath(process.env, this.profile);
@@ -223,13 +226,13 @@ export class PolicyStore {
       const raw = await readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as Partial<PolicyFile>;
       return {
-        version: 1,
+        version: 2,
         dayBoundary: "UTC",
         policies: Array.isArray(parsed.policies) ? parsed.policies : [],
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return { version: 1, dayBoundary: "UTC", policies: [] };
+        return { version: 2, dayBoundary: "UTC", policies: [] };
       }
       throw error;
     }
@@ -258,24 +261,53 @@ export class PolicyStore {
   async grant(input: GrantPolicyInput): Promise<SpendPolicyGrant> {
     const now = input.now ?? new Date();
     const { facet } = input;
-    const expectedFacetId = input.facetId ?? facet.id;
 
-    if (facet.id !== expectedFacetId) {
+    if (!isValidUsername(facet.provider)) {
       throw new SpendPolicyError(
-        "POLICY_VERSION_MISMATCH",
-        `Catalog returned facet ${facet.id}, expected ${expectedFacetId}.`,
+        "POLICY_INVALID",
+        `Invalid provider '${facet.provider}'. Must be 8-16 lowercase hyphenated kebab-case characters.`,
+      );
+    }
+    if (!isValidFacetName(facet.facetName)) {
+      throw new SpendPolicyError(
+        "POLICY_INVALID",
+        `Invalid facetName '${facet.facetName}'. Must be 4-32 lowercase hyphenated kebab-case characters.`,
+      );
+    }
+    if (!facet.facetDisplayName || !facet.facetDisplayName.trim()) {
+      throw new SpendPolicyError(
+        "POLICY_INVALID",
+        "Catalog Facet is missing facetDisplayName.",
+      );
+    }
+    if (!isValidSemver(facet.version)) {
+      throw new SpendPolicyError(
+        "POLICY_INVALID",
+        `Invalid Facet version '${facet.version}'. Expected SemVer MAJOR.MINOR.PATCH.`,
       );
     }
 
-    if (input.versionId !== undefined) {
-      const matchesVersionId = facet.versionId === input.versionId;
-      const matchesDisplayVersion =
-        facet.displayVersion !== undefined &&
-        facet.displayVersion === input.versionId;
-      if (!matchesVersionId && !matchesDisplayVersion) {
+    if (
+      (input.provider !== undefined && input.provider !== facet.provider) ||
+      (input.facetName !== undefined && input.facetName !== facet.facetName)
+    ) {
+      throw new SpendPolicyError(
+        "POLICY_INVALID",
+        `Catalog returned ${facet.provider}/${facet.facetName}, expected ${input.provider ?? facet.provider}/${input.facetName ?? facet.facetName}.`,
+      );
+    }
+
+    if (input.version !== undefined) {
+      if (!isValidSemver(input.version)) {
+        throw new SpendPolicyError(
+          "POLICY_INVALID",
+          `Requested version '${input.version}' must be SemVer MAJOR.MINOR.PATCH.`,
+        );
+      }
+      if (facet.version !== input.version) {
         throw new SpendPolicyError(
           "POLICY_VERSION_MISMATCH",
-          `Catalog returned facet ${facet.id} version ${facet.versionId}${facet.displayVersion ? ` (${facet.displayVersion})` : ""}, expected ${input.versionId}.`,
+          `Catalog returned ${facet.provider}/${facet.facetName} version ${facet.version}, expected ${input.version}.`,
         );
       }
     }
@@ -344,29 +376,18 @@ export class PolicyStore {
       );
     }
 
-    const facetFullName =
-      facet.fullName ??
-      (facet.provider?.slug
-        ? `${facet.provider.slug}/${facet.slug}`
-        : facet.slug);
-
     const grant: SpendPolicyGrant = {
-      profile: resolveProfileName(input.profile ?? this.profile),
-      facetId: facet.id,
-      facetSlug: facet.slug,
-      facetFullName,
-      facetName: facet.name,
-      ...(facet.displayVersion
-        ? { displayVersion: facet.displayVersion }
-        : {}),
-      versionId: facet.versionId,
-      facetType: facet.facetType ?? "HOSTED_ACTOR",
+      provider: facet.provider,
+      facetName: facet.facetName,
+      facetDisplayName: facet.facetDisplayName,
+      version: facet.version,
+      facetType: facet.facetType,
       chainId: FUJI_CHAIN_ID,
       network: FUJI_NETWORK,
       assetAddress: FUSD_ASSET_ADDRESS,
       // Always pin the verified FeeSplit contract shipped with the package, never from agent input.
       settlementContract: FACET_FEE_SPLIT_ADDRESS,
-      creatorPayTo: pricing.payTo,
+      providerPayTo: pricing.payTo,
       pricingModel: pricing.model,
       pinnedPriceAtomic: pinnedPrice.toString(),
       maxPerRunAtomic: maxPerRun.toString(),
@@ -381,13 +402,14 @@ export class PolicyStore {
     const filtered = file.policies.filter(
       (existing) =>
         !(
-          existing.facetId === grant.facetId &&
-          existing.versionId === grant.versionId
+          existing.provider === grant.provider &&
+          existing.facetName === grant.facetName &&
+          existing.version === grant.version
         ),
     );
     filtered.push(grant);
     await this.writePolicies({
-      version: 1,
+      version: 2,
       dayBoundary: "UTC",
       policies: filtered,
     });
@@ -395,51 +417,42 @@ export class PolicyStore {
   }
 
   async findGrant(
-    facetId: string,
-    versionId: string,
+    provider: string,
+    facetName: string,
+    version: string,
   ): Promise<SpendPolicyGrant | undefined> {
     const file = await this.readPolicies();
     return file.policies.find(
-      (entry) => entry.facetId === facetId && entry.versionId === versionId,
+      (entry) =>
+        entry.provider === provider &&
+        entry.facetName === facetName &&
+        entry.version === version,
     );
   }
 
-  async findGrantByVersion(
-    versionId: string,
-  ): Promise<SpendPolicyGrant | undefined> {
-    const file = await this.readPolicies();
-    return file.policies.find((entry) => entry.versionId === versionId);
-  }
-
   async show(filter?: {
-    facetId?: string;
-    versionId?: string;
-  }): Promise<{ profile: string; dayBoundary: "UTC"; policies: SpendPolicyGrant[] }> {
+    provider?: string;
+    facetName?: string;
+    version?: string;
+  }): Promise<{
+    profile: string;
+    dayBoundary: "UTC";
+    policies: SpendPolicyGrant[];
+  }> {
     const file = await this.readPolicies();
     const policies = file.policies.filter((entry) => {
-      if (
-        filter?.facetId &&
-        entry.facetId !== filter.facetId &&
-        entry.facetFullName !== filter.facetId &&
-        entry.facetSlug !== filter.facetId
-      ) {
-        return false;
-      }
-      if (
-        filter?.versionId &&
-        entry.versionId !== filter.versionId &&
-        entry.displayVersion !== filter.versionId
-      ) {
-        return false;
-      }
+      if (filter?.provider && entry.provider !== filter.provider) return false;
+      if (filter?.facetName && entry.facetName !== filter.facetName) return false;
+      if (filter?.version && entry.version !== filter.version) return false;
       return true;
     });
     return { profile: this.profile, dayBoundary: "UTC", policies };
   }
 
   async revoke(input: {
-    facetId?: string;
-    versionId?: string;
+    provider?: string;
+    facetName?: string;
+    version?: string;
     all?: boolean;
     now?: Date;
   }): Promise<{ revoked: boolean; count: number }> {
@@ -448,16 +461,13 @@ export class PolicyStore {
     let count = 0;
 
     const updated = file.policies.map((entry) => {
+      const providerMatches = !input.provider || entry.provider === input.provider;
       const facetMatches =
-        !input.facetId ||
-        entry.facetId === input.facetId ||
-        entry.facetFullName === input.facetId ||
-        entry.facetSlug === input.facetId;
-      const versionMatches =
-        !input.versionId ||
-        entry.versionId === input.versionId ||
-        entry.displayVersion === input.versionId;
-      const matches = input.all ? true : facetMatches && versionMatches;
+        !input.facetName || entry.facetName === input.facetName;
+      const versionMatches = !input.version || entry.version === input.version;
+      const matches = input.all
+        ? true
+        : providerMatches && facetMatches && versionMatches;
       if (matches && !entry.revokedAt) {
         count += 1;
         return { ...entry, revokedAt: nowIso };
@@ -473,11 +483,48 @@ export class PolicyStore {
     }
 
     await this.writePolicies({
-      version: 1,
+      version: 2,
       dayBoundary: "UTC",
       policies: updated,
     });
     return { revoked: true, count };
+  }
+
+  async prune(input: {
+    provider?: string;
+    facetName?: string;
+    version?: string;
+    all?: boolean;
+  } = {}): Promise<{ pruned: number }> {
+    const file = await this.readPolicies();
+    const hasFilter = Boolean(input.provider || input.facetName || input.version);
+    const kept: SpendPolicyGrant[] = [];
+    let pruned = 0;
+
+    for (const entry of file.policies) {
+      const isRevoked = Boolean(entry.revokedAt);
+      const matchesFilter =
+        (!input.provider || entry.provider === input.provider) &&
+        (!input.facetName || entry.facetName === input.facetName) &&
+        (!input.version || entry.version === input.version);
+      const shouldDrop = input.all
+        ? true
+        : hasFilter
+          ? matchesFilter
+          : isRevoked;
+      if (shouldDrop) {
+        pruned += 1;
+      } else {
+        kept.push(entry);
+      }
+    }
+
+    await this.writePolicies({
+      version: 2,
+      dayBoundary: "UTC",
+      policies: kept,
+    });
+    return { pruned };
   }
 }
 
@@ -488,13 +535,13 @@ export function validateGrantAgainstChallenge(
   if (!grant) {
     throw new SpendPolicyError(
       "POLICY_NOT_GRANTED",
-      `Default-deny: no spending policy granted for facet ${challenge.facetId} version ${challenge.facetVersionId}.`,
+      `Default-deny: no spending policy granted for ${challenge.provider}/${challenge.facetName}@${challenge.version}.`,
     );
   }
   if (grant.revokedAt) {
     throw new SpendPolicyError(
       "POLICY_REVOKED",
-      `Spending policy for version ${grant.versionId} was revoked at ${grant.revokedAt}.`,
+      `Spending policy for ${grant.provider}/${grant.facetName}@${grant.version} was revoked at ${grant.revokedAt}.`,
     );
   }
 
@@ -502,7 +549,7 @@ export function validateGrantAgainstChallenge(
   if (now.getTime() >= Date.parse(grant.expiresAt)) {
     throw new SpendPolicyError(
       "POLICY_EXPIRED",
-      `Spending policy for version ${grant.versionId} expired at ${grant.expiresAt}.`,
+      `Spending policy for ${grant.provider}/${grant.facetName}@${grant.version} expired at ${grant.expiresAt}.`,
     );
   }
 
@@ -533,12 +580,12 @@ export function validateGrantAgainstChallenge(
   }
 
   if (
-    challenge.creatorPayTo !== undefined &&
-    challenge.creatorPayTo.toLowerCase() !== grant.creatorPayTo.toLowerCase()
+    challenge.providerPayTo !== undefined &&
+    challenge.providerPayTo.toLowerCase() !== grant.providerPayTo.toLowerCase()
   ) {
     throw new SpendPolicyError(
       "POLICY_RECIPIENT_MISMATCH",
-      `Creator payTo ${challenge.creatorPayTo} does not match pinned creator ${grant.creatorPayTo}.`,
+      `Provider payTo ${challenge.providerPayTo} does not match pinned provider ${grant.providerPayTo}.`,
     );
   }
 
@@ -580,8 +627,9 @@ export async function authorizePaymentChallenge(
   challenge: AuthorizeChallengeInput,
 ): Promise<SpendPolicyGrant> {
   const grant = await store.findGrant(
-    challenge.facetId,
-    challenge.facetVersionId,
+    challenge.provider,
+    challenge.facetName,
+    challenge.version,
   );
   return validateGrantAgainstChallenge(grant, challenge);
 }

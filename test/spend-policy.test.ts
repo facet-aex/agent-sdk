@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -43,13 +43,11 @@ function sampleVerifiedFacet(
     payTo: "0x9265c1c87fC5fb3C72Dc68b4D3A005dE1E22C3cf",
   };
   return {
-    id: "01a1e97a-90e0-7030-b565-91c9abc3857b",
-    versionId: "01a1e97a-90e0-7038-b9ff-4f8d2a599e04",
-    slug: "echo-actor",
-    name: "Echo Actor",
-    displayVersion: "1.0.0",
-    provider: { id: "prov-1", name: "Tai Hung", slug: "taihung" },
-    facetType: "HOSTED_ACTOR",
+    provider: "tai-hung-dev",
+    facetName: "echo-actor",
+    facetDisplayName: "Echo Actor",
+    version: "1.0.0",
+    facetType: "ACTOR",
     actorMeta: {
       runtime: "nodejs22-alpine-v1",
       imageDigest: "sha256:" + "a".repeat(64),
@@ -61,7 +59,7 @@ function sampleVerifiedFacet(
   };
 }
 
-describe("SpendPolicy store & authorization", () => {
+describe("SpendPolicy Option B store & authorization", () => {
   it("denies by default when no policy grant exists", async () => {
     const dir = await makeTempDir();
     const store = new PolicyStore({ filePath: join(dir, "policies.json") });
@@ -69,20 +67,23 @@ describe("SpendPolicy store & authorization", () => {
 
     await expect(
       authorizePaymentChallenge(store, {
-        facetId: facet.id,
-        facetVersionId: facet.versionId,
+        provider: facet.provider,
+        facetName: facet.facetName,
+        version: facet.version,
         chainId: FUJI_CHAIN_ID,
         assetAddress: FUSD_ASSET_ADDRESS,
         settlementPayTo: FACET_FEE_SPLIT_ADDRESS,
-        creatorPayTo: facet.pricing.payTo,
+        providerPayTo: facet.pricing.payTo,
         amountAtomic: "1000",
       }),
     ).rejects.toMatchObject({ code: "POLICY_NOT_GRANTED" });
   });
 
-  it("pins exact version, Fuji/fUSD, creator recipient, and fee-split contract on grant, and rejects unverified records", async () => {
+  it("pins natural keys, SemVer version, Fuji/fUSD, provider recipient, and fee-split contract, omitting redundant/UUID fields", async () => {
     const dir = await makeTempDir();
-    const store = new PolicyStore({ filePath: join(dir, "policies.json") });
+    const policyPath = join(dir, "policies.json");
+    const store = new PolicyStore({ filePath: policyPath });
+
     const unverified = sampleVerifiedFacet({
       actorMeta: {
         runtime: "nodejs22-alpine-v1",
@@ -90,12 +91,9 @@ describe("SpendPolicy store & authorization", () => {
         registryVerified: false,
       },
     });
-
     await expect(
       store.grant({
         facet: unverified,
-        facetId: unverified.id,
-        versionId: unverified.versionId,
         maxPerRunAtomic: "1000",
         dailyCapAtomic: "10000",
         expiresAt: "2030-01-01T00:00:00Z",
@@ -106,54 +104,74 @@ describe("SpendPolicy store & authorization", () => {
     await expect(
       store.grant({
         facet: verified,
-        facetId: verified.id,
-        versionId: "01a1e97a-90e0-7038-b9ff-4f8d2a599999",
+        version: "1.0.1",
         maxPerRunAtomic: "1000",
         dailyCapAtomic: "10000",
         expiresAt: "2030-01-01T00:00:00Z",
       }),
     ).rejects.toMatchObject({ code: "POLICY_VERSION_MISMATCH" });
 
+    await expect(
+      store.grant({
+        facet: sampleVerifiedFacet({ provider: "short" }),
+        expiresAt: "2030-01-01T00:00:00Z",
+      }),
+    ).rejects.toMatchObject({ code: "POLICY_INVALID" });
+
+    await expect(
+      store.grant({
+        facet: sampleVerifiedFacet({ version: "v1" }),
+        expiresAt: "2030-01-01T00:00:00Z",
+      }),
+    ).rejects.toMatchObject({ code: "POLICY_INVALID" });
+
     const grant = await store.grant({
       facet: verified,
-      facetId: verified.id,
-      versionId: verified.versionId,
       maxPerRunAtomic: "1000",
       dailyCapAtomic: "10000",
       expiresAt: "2030-01-01T00:00:00Z",
     });
 
+    expect(grant.provider).toBe("tai-hung-dev");
+    expect(grant.facetName).toBe("echo-actor");
+    expect(grant.facetDisplayName).toBe("Echo Actor");
+    expect(grant.version).toBe("1.0.0");
+    expect(grant.facetType).toBe("ACTOR");
     expect(grant.settlementContract.toLowerCase()).toBe(
       FACET_FEE_SPLIT_ADDRESS.toLowerCase(),
     );
-    expect(grant.creatorPayTo.toLowerCase()).toBe(
-      verified.pricing.payTo.toLowerCase(),
-    );
-    expect(grant.dayBoundary).toBe("UTC");
 
-    // Different version denied
+    const serializedGrant = JSON.stringify(grant);
+    expect(serializedGrant).not.toMatch(
+      /profile|facetId|versionId|facetSlug|facetFullName|displayVersion|\bslug\b|\bfullName\b|\bcreator\b|creatorPayTo/u,
+    );
+
+    // Different SemVer version denied
     await expect(
       authorizePaymentChallenge(store, {
-        facetId: verified.id,
-        facetVersionId: "01a1e97a-90e0-7038-b9ff-4f8d2a599999",
+        provider: verified.provider,
+        facetName: verified.facetName,
+        version: "1.0.1",
         chainId: FUJI_CHAIN_ID,
         assetAddress: FUSD_ASSET_ADDRESS,
         settlementPayTo: FACET_FEE_SPLIT_ADDRESS,
-        creatorPayTo: verified.pricing.payTo,
+        providerPayTo: verified.pricing.payTo,
         amountAtomic: "1000",
       }),
     ).rejects.toMatchObject({ code: "POLICY_NOT_GRANTED" });
+
+    // Raw file does not contain profile inside entries
+    const fileText = await readFile(policyPath, "utf8");
+    expect(fileText).not.toContain('"profile"');
   });
 
-  it("denies expired grants, amount mismatches, wrong creator/settlement recipient, and revoked grants", async () => {
+  it("denies expired grants, amount mismatches, wrong provider/settlement recipient, and revoked/pruned grants", async () => {
     const dir = await makeTempDir();
     const store = new PolicyStore({ filePath: join(dir, "policies.json") });
     const facet = sampleVerifiedFacet();
 
     await store.grant({
       facet,
-      facetId: facet.id,
-      versionId: facet.versionId,
       maxPerRunAtomic: "1000",
       dailyCapAtomic: "5000",
       expiresAt: "2026-11-18T12:00:00Z",
@@ -161,20 +179,20 @@ describe("SpendPolicy store & authorization", () => {
     });
 
     const validBase = {
-      facetId: facet.id,
-      facetVersionId: facet.versionId,
+      provider: facet.provider,
+      facetName: facet.facetName,
+      version: facet.version,
       chainId: FUJI_CHAIN_ID,
       assetAddress: FUSD_ASSET_ADDRESS,
       settlementPayTo: FACET_FEE_SPLIT_ADDRESS,
-      creatorPayTo: facet.pricing.payTo,
+      providerPayTo: facet.pricing.payTo,
       amountAtomic: "1000",
       now: new Date("2026-11-18T01:00:00Z"),
     };
 
     const authorized = await authorizePaymentChallenge(store, validBase);
-    expect(authorized.versionId).toBe(facet.versionId);
+    expect(authorized.version).toBe("1.0.0");
 
-    // Expired
     await expect(
       authorizePaymentChallenge(store, {
         ...validBase,
@@ -182,7 +200,6 @@ describe("SpendPolicy store & authorization", () => {
       }),
     ).rejects.toMatchObject({ code: "POLICY_EXPIRED" });
 
-    // Amount exceeds max-per-run
     await expect(
       authorizePaymentChallenge(store, {
         ...validBase,
@@ -190,15 +207,13 @@ describe("SpendPolicy store & authorization", () => {
       }),
     ).rejects.toMatchObject({ code: "POLICY_MAX_PER_RUN_EXCEEDED" });
 
-    // Wrong creator recipient
     await expect(
       authorizePaymentChallenge(store, {
         ...validBase,
-        creatorPayTo: "0x1111111111111111111111111111111111111111",
+        providerPayTo: "0x1111111111111111111111111111111111111111",
       }),
     ).rejects.toMatchObject({ code: "POLICY_RECIPIENT_MISMATCH" });
 
-    // Wrong fee-split settlement recipient
     await expect(
       authorizePaymentChallenge(store, {
         ...validBase,
@@ -206,7 +221,6 @@ describe("SpendPolicy store & authorization", () => {
       }),
     ).rejects.toMatchObject({ code: "POLICY_RECIPIENT_MISMATCH" });
 
-    // Wrong asset / chain
     await expect(
       authorizePaymentChallenge(store, {
         ...validBase,
@@ -214,10 +228,10 @@ describe("SpendPolicy store & authorization", () => {
       }),
     ).rejects.toMatchObject({ code: "POLICY_CHAIN_MISMATCH" });
 
-    // Revoke
     const revoked = await store.revoke({
-      facetId: facet.id,
-      versionId: facet.versionId,
+      provider: facet.provider,
+      facetName: facet.facetName,
+      version: facet.version,
       now: new Date("2026-11-18T02:00:00Z"),
     });
     expect(revoked.revoked).toBe(true);
@@ -228,94 +242,13 @@ describe("SpendPolicy store & authorization", () => {
         now: new Date("2026-11-18T03:00:00Z"),
       }),
     ).rejects.toMatchObject({ code: "POLICY_REVOKED" });
+
+    const pruned = await store.prune({ all: true });
+    expect(pruned.pruned).toBe(1);
+    expect((await store.show()).policies).toHaveLength(0);
   });
 
-  it("supports facet policy grant, show, and revoke via CLI", async () => {
-    const dir = await makeTempDir();
-    const policyPath = join(dir, "policies.json");
-    const facet = sampleVerifiedFacet();
-
-    const fetchMock = vi.fn(async (url: URL | string) => {
-      expect(String(url)).toContain(`/v1/catalog/facets/${facet.id}`);
-      return new Response(JSON.stringify({ facet }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    try {
-      const grantOut: string[] = [];
-      const grantCode = await runCli(
-        [
-          "policy",
-          "grant",
-          "--facet",
-          facet.id,
-          "--version",
-          facet.versionId,
-          "--max-per-run",
-          "1000",
-          "--daily-cap",
-          "10000",
-          "--expires",
-          "2030-01-01T00:00:00Z",
-        ],
-        {
-          env: {
-            ...process.env,
-            FACET_POLICY_PATH: policyPath,
-            FACET_CONTROL_API_URL: "https://facet.briandev.space",
-          },
-          stdout: (line) => grantOut.push(line),
-          stderr: (line) => {
-            throw new SpendPolicyError("POLICY_INVALID", line);
-          },
-        },
-      );
-      expect(grantCode).toBe(0);
-      const granted = JSON.parse(grantOut[0]!) as {
-        policy: { versionId: string; maxPerRunAtomic: string; dailyCapAtomic: string };
-      };
-      expect(granted.policy.versionId).toBe(facet.versionId);
-      expect(granted.policy.maxPerRunAtomic).toBe("1000");
-
-      const showOut: string[] = [];
-      const showCode = await runCli(["policy", "show"], {
-        env: { ...process.env, FACET_POLICY_PATH: policyPath },
-        stdout: (line) => showOut.push(line),
-      });
-      expect(showCode).toBe(0);
-      const shown = JSON.parse(showOut[0]!) as {
-        dayBoundary: string;
-        policies: Array<{ versionId: string }>;
-      };
-      expect(shown.dayBoundary).toBe("UTC");
-      expect(shown.policies).toHaveLength(1);
-
-      const revokeOut: string[] = [];
-      const revokeCode = await runCli(
-        [
-          "policy",
-          "revoke",
-          "--facet",
-          facet.id,
-          "--version",
-          facet.versionId,
-        ],
-        {
-          env: { ...process.env, FACET_POLICY_PATH: policyPath },
-          stdout: (line) => revokeOut.push(line),
-        },
-      );
-      expect(revokeCode).toBe(0);
-      expect(JSON.parse(revokeOut[0]!)).toMatchObject({ revoked: true });
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("defaults facet policy grant to latest version, 1000 max-per-run, 10000 daily-cap, and +1 UTC month expiry, and resolves username/facet-name", async () => {
+  it("supports CLI policy grant (--facet provider/facet or --provider + --facet), show, revoke, prune, and defaults", async () => {
     const dir = await makeTempDir();
     const facet = sampleVerifiedFacet();
 
@@ -334,13 +267,8 @@ describe("SpendPolicy store & authorization", () => {
 
     const fetchMock = vi.fn(async (url: URL | string) => {
       const href = String(url);
-      if (href.endsWith("/v1/catalog/facets/taihung/echo-actor")) {
-        return new Response(JSON.stringify({ facet }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
-      return new Response(JSON.stringify({ facets: [facet] }), {
+      expect(href).toContain("/v1/catalog/facets/tai-hung-dev/echo-actor");
+      return new Response(JSON.stringify({ facet }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -354,7 +282,7 @@ describe("SpendPolicy store & authorization", () => {
           "policy",
           "grant",
           "--facet",
-          "taihung/echo-actor",
+          "tai-hung-dev/echo-actor",
           "--profile",
           "research",
         ],
@@ -371,40 +299,79 @@ describe("SpendPolicy store & authorization", () => {
         },
       );
       expect(grantCode).toBe(0);
-      const { policy } = JSON.parse(grantOut[0]!) as {
-        policy: {
-          profile: string;
-          facetId: string;
-          facetFullName: string;
-          versionId: string;
-          displayVersion: string;
-          maxPerRunAtomic: string;
-          dailyCapAtomic: string;
-          expiresAt: string;
-          grantedAt: string;
-        };
+      const granted = JSON.parse(grantOut[0]!) as {
+        profile: string;
+        policy: Record<string, unknown>;
       };
-      expect(policy.profile).toBe("research");
-      expect(policy.facetId).toBe(facet.id);
-      expect(policy.facetFullName).toBe("taihung/echo-actor");
-      expect(policy.versionId).toBe(facet.versionId);
-      expect(policy.displayVersion).toBe("1.0.0");
-      expect(policy.maxPerRunAtomic).toBe("1000");
-      expect(policy.dailyCapAtomic).toBe("10000");
-      expect(Date.parse(policy.expiresAt)).toBeGreaterThan(
-        Date.parse(policy.grantedAt) + 27 * 24 * 3600 * 1000,
-      );
+      expect(granted.profile).toBe("research");
+      expect(granted.policy.provider).toBe("tai-hung-dev");
+      expect(granted.policy.facetName).toBe("echo-actor");
+      expect(granted.policy.facetDisplayName).toBe("Echo Actor");
+      expect(granted.policy.version).toBe("1.0.0");
+      expect(granted.policy.facetType).toBe("ACTOR");
+      expect(granted.policy.profile).toBeUndefined();
+      expect(granted.policy.facetId).toBeUndefined();
+      expect(granted.policy.versionId).toBeUndefined();
+      expect(granted.policy.facetSlug).toBeUndefined();
+      expect(granted.policy.facetFullName).toBeUndefined();
+      expect(granted.policy.displayVersion).toBeUndefined();
 
       const showOut: string[] = [];
       const showCode = await runCli(
-        ["policy", "show", "--profile", "research"],
+        [
+          "policy",
+          "show",
+          "--provider",
+          "tai-hung-dev",
+          "--facet",
+          "echo-actor",
+          "--profile",
+          "research",
+        ],
         {
           env: { ...process.env, FACET_CONFIG_DIR: dir },
           stdout: (line) => showOut.push(line),
         },
       );
       expect(showCode).toBe(0);
-      expect(JSON.parse(showOut[0]!).policies).toHaveLength(1);
+      const shown = JSON.parse(showOut[0]!) as {
+        profile: string;
+        policies: Array<{ provider: string; facetName: string }>;
+      };
+      expect(shown.profile).toBe("research");
+      expect(shown.policies).toHaveLength(1);
+      expect(shown.policies[0]?.provider).toBe("tai-hung-dev");
+
+      const revokeOut: string[] = [];
+      const revokeCode = await runCli(
+        [
+          "policy",
+          "revoke",
+          "--provider",
+          "tai-hung-dev",
+          "--facet",
+          "echo-actor",
+          "--profile",
+          "research",
+        ],
+        {
+          env: { ...process.env, FACET_CONFIG_DIR: dir },
+          stdout: (line) => revokeOut.push(line),
+        },
+      );
+      expect(revokeCode).toBe(0);
+      expect(JSON.parse(revokeOut[0]!)).toMatchObject({ revoked: true, count: 1 });
+
+      const pruneOut: string[] = [];
+      const pruneCode = await runCli(
+        ["policy", "prune", "--profile", "research"],
+        {
+          env: { ...process.env, FACET_CONFIG_DIR: dir },
+          stdout: (line) => pruneOut.push(line),
+        },
+      );
+      expect(pruneCode).toBe(0);
+      expect(JSON.parse(pruneOut[0]!)).toMatchObject({ pruned: 1 });
     } finally {
       vi.unstubAllGlobals();
     }

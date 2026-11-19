@@ -35,14 +35,38 @@ export {
   type FujiWalletStatus,
 } from "./fuji-wallet.js";
 export {
+  FACET_NAME_MAX,
+  FACET_NAME_MIN,
+  FACET_NAME_REGEX,
+  FACET_TYPES,
+  SEMVER_REGEX,
+  USERNAME_MAX,
+  USERNAME_MIN,
+  USERNAME_REGEX,
+  compareSemver,
+  isValidFacetName,
+  isValidFacetType,
+  isValidSemver,
+  isValidUsername,
+  parseFacetRef,
+  parseSemver,
+  type FacetType,
+} from "./identifiers.js";
+export {
+  SNOWTRACE_TX_BASE,
   SpendLedger,
   SpendLedgerError,
   defaultSpendLedgerPath,
+  formatSpendHistory,
+  formatSpendHistoryText,
   parsePositiveAtomic,
+  snowtraceTxUrl,
   utcDayKey,
   type ConfirmOptions,
   type ReserveOptions,
   type SpendEntryStatus,
+  type SpendHistoryInvoice,
+  type SpendHistoryReport,
   type SpendLedgerEntry,
   type SpendLedgerErrorCode,
 } from "./spend-ledger.js";
@@ -82,10 +106,15 @@ export {
   type McpInstallErrorCode,
 } from "./mcp-install.js";
 
-export type FacetType =
-  | "EXTERNAL_HTTP_API"
-  | "HOSTED_ACTOR"
-  | "AUTONOMOUS_AGENT";
+import {
+  compareSemver,
+  isValidFacetName,
+  isValidSemver,
+  isValidUsername,
+  parseFacetRef,
+  type FacetType,
+} from "./identifiers.js";
+import type { PublicFacetRecord } from "./spend-policy.js";
 
 export interface FacetClientConfig {
   controlApiUrl: string;
@@ -124,86 +153,86 @@ export class FacetClient {
     if (options.category) url.searchParams.set("category", options.category);
     if (options.limit) url.searchParams.set("limit", String(options.limit));
     const response = await fetch(url, { headers: { accept: "application/json" } });
-    const body = (await response.json()) as { facets?: unknown[]; error?: { message?: string } };
+    const body = (await response.json()) as {
+      facets?: PublicFacetRecord[];
+      error?: { message?: string };
+    };
     if (!response.ok) {
       throw new Error(body.error?.message ?? `HTTP ${response.status}`);
     }
     return body.facets ?? [];
   }
 
-  async getFacet(facetId: string) {
-    const url = new URL(`/v1/catalog/facets/${facetId}`, this.config.controlApiUrl);
+  async getFacet(provider: string, facetName: string, version?: string) {
+    if (!isValidUsername(provider)) {
+      throw new Error(
+        `Invalid provider '${provider}'. Must be 8-16 lowercase hyphenated kebab-case characters.`,
+      );
+    }
+    if (!isValidFacetName(facetName)) {
+      throw new Error(
+        `Invalid facetName '${facetName}'. Must be 4-32 lowercase hyphenated kebab-case characters.`,
+      );
+    }
+    if (version !== undefined && !isValidSemver(version)) {
+      throw new Error(
+        `Invalid version '${version}'. Expected SemVer MAJOR.MINOR.PATCH.`,
+      );
+    }
+
+    const base = `/v1/catalog/facets/${encodeURIComponent(provider)}/${encodeURIComponent(facetName)}`;
+    const path = version ? `${base}/versions/${encodeURIComponent(version)}` : base;
+    const url = new URL(path, this.config.controlApiUrl);
     const response = await fetch(url, { headers: { accept: "application/json" } });
-    const body = (await response.json()) as { facet?: unknown; error?: { message?: string } };
+    const body = (await response.json()) as {
+      facet?: PublicFacetRecord;
+      error?: { message?: string };
+    };
     if (!response.ok) {
       throw new Error(body.error?.message ?? `HTTP ${response.status}`);
     }
     return body.facet;
   }
 
-  async resolveFacet(facetRef: string) {
-    const trimmed = facetRef.trim();
-    if (
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(
-        trimmed,
-      )
-    ) {
-      return this.getFacet(trimmed);
-    }
-
-    const parts = trimmed.split("/");
-    if (parts.length === 2 && parts[0] && parts[1]) {
-      const [username, facetSlug] = parts;
-      const directUrl = new URL(
-        `/v1/catalog/facets/${encodeURIComponent(username)}/${encodeURIComponent(facetSlug)}`,
-        this.config.controlApiUrl,
-      );
-      const directRes = await fetch(directUrl, {
-        headers: { accept: "application/json" },
-      });
-      if (directRes.ok) {
-        const body = (await directRes.json()) as { facet?: unknown };
-        if (body.facet) return body.facet;
-      }
-
-      const candidates = (await this.searchFacets({
-        query: facetSlug,
-        limit: 50,
-      })) as Array<{
-        slug?: string;
-        fullName?: string;
-        provider?: { slug?: string };
-      }>;
-      return candidates.find(
-        (candidate) =>
-          candidate.fullName === trimmed ||
-          (candidate.provider?.slug === username &&
-            candidate.slug === facetSlug),
-      );
-    }
-
-    const candidates = (await this.searchFacets({
-      query: trimmed,
-      limit: 50,
-    })) as Array<{ slug?: string }>;
-    const matches = candidates.filter((candidate) => candidate.slug === trimmed);
-    if (matches.length > 1) {
+  async resolveFacet(
+    facetRef: string,
+    options?: { provider?: string; version?: string },
+  ): Promise<PublicFacetRecord | undefined> {
+    const { provider, facetName } = parseFacetRef(facetRef, options?.provider);
+    if (options?.version !== undefined && !isValidSemver(options.version)) {
       throw new Error(
-        `AMBIGUOUS_FACET_NAME: Multiple facets match '${trimmed}'. Specify <username>/<facet-name>.`,
+        `Invalid version '${options.version}'. Expected SemVer MAJOR.MINOR.PATCH.`,
       );
     }
-    return matches[0];
+
+    try {
+      const direct = await this.getFacet(provider, facetName, options?.version);
+      if (direct) return direct;
+    } catch {
+      // Fall back to catalog search when looking up without an exact direct match.
+    }
+
+    const candidates = await this.searchFacets({ query: facetName, limit: 50 });
+    const matching = candidates.filter(
+      (candidate) =>
+        candidate.provider === provider &&
+        candidate.facetName === facetName &&
+        (!options?.version || candidate.version === options.version),
+    );
+    if (matching.length === 0) return undefined;
+    matching.sort((a, b) => compareSemver(b.version, a.version));
+    return matching[0];
   }
 
   async publishActor(input: {
-    providerId: string;
-    name: string;
-    slug: string;
+    facetName: string;
+    facetDisplayName: string;
+    version?: string;
     description: string;
     category: string;
     inputSchema: Record<string, unknown>;
     code: string;
-    pricingModel?: "PAY_PER_RUN" | "PAY_PER_RESULT";
+    pricingModel?: "PAY_PER_RUN";
     priceAtomic?: string;
     payTo?: string;
     tags?: string[];
@@ -214,7 +243,10 @@ export class FacetClient {
       headers: this.authHeaders(),
       body: JSON.stringify(input),
     });
-    const body = (await response.json()) as { facet?: unknown; error?: { message?: string } };
+    const body = (await response.json()) as {
+      facet?: unknown;
+      error?: { message?: string };
+    };
     if (!response.ok) {
       throw new Error(body.error?.message ?? `HTTP ${response.status}`);
     }
@@ -222,9 +254,9 @@ export class FacetClient {
   }
 
   async registerAgentFacet(input: {
-    providerId: string;
-    name: string;
-    slug: string;
+    facetName: string;
+    facetDisplayName: string;
+    version?: string;
     description: string;
     category: string;
     erc8004TokenId: string;
@@ -241,7 +273,10 @@ export class FacetClient {
       headers: this.authHeaders(),
       body: JSON.stringify(input),
     });
-    const body = (await response.json()) as { facet?: unknown; error?: { message?: string } };
+    const body = (await response.json()) as {
+      facet?: unknown;
+      error?: { message?: string };
+    };
     if (!response.ok) {
       throw new Error(body.error?.message ?? `HTTP ${response.status}`);
     }

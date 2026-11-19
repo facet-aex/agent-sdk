@@ -1,50 +1,34 @@
 # `@facet-aex/cli`
 
-Installable buyer CLI and TypeScript library for FACET on Avalanche Fuji (`chainId: 43113`, `fUSD` `0xe7082a54a456dc4dfe0ceadcd0d0dce7d8ba176f`).
+Buyer CLI and TypeScript library for Avalanche Fuji local wallet custody, default-deny spending policies, local spend history invoices, and MCP client configuration.
 
-## Supported Runtime
-
-- **Node.js:** `>=22.0.0` (verified on Node `v24.12.0` and `v26.13.1`; `viem@2.57.17` and its transitive dependencies impose no `<25` upper limit).
-- **Credential store (first demo):** macOS Keychain via `/usr/bin/security` (`security -i` stdin write so private keys never appear in `argv`, `env`, or plaintext config files).
-
-## Buyer Wallet Commands
-
-Normal usage requires **no environment variables** (defaults to profile `"default"`):
+## Quickstart
 
 ```bash
-facet wallet create   # generates a dedicated Fuji EOA and stores its key in macOS Keychain
-facet wallet import   # imports a 0x-prefixed private key via hidden interactive prompt
-facet wallet status   # checks Fuji chain ID (43113) and prints address + fUSD balance
-```
+# 1) Create a protected Fuji wallet (stored in OS credential store, never plaintext)
+facet wallet create
+facet wallet status
 
-`FacetUSD` (`fUSD`) on Fuji is owner-minted; fund your buyer address via an explicit operator transfer rather than an automated public faucet.
+# 2) Grant policy (uses Option B natural keys + strict SemVer, defaults: latest version, 1000 max-per-run, 10000 daily-cap, +1 UTC month)
+facet policy grant --facet tai-hung-dev/vn-gold-fx-actor
+# Or with explicit separated fields & pinned SemVer:
+facet policy grant --provider tai-hung-dev --facet vn-gold-fx-actor --version 1.0.0
 
-## Spending Policy Commands (UTC Day Boundary)
-
-Only `--facet` is required (`--version` defaults to the latest published version, `--max-per-run` to `1000`, `--daily-cap` to `10000`, and `--expires` to 1 month UTC from grant time):
-
-```bash
-facet policy grant --facet <username/facet-name|facetId>
+# 3) Inspect or prune policies
 facet policy show
-facet policy revoke --facet <username/facet-name|facetId>
+facet policy revoke --facet tai-hung-dev/vn-gold-fx-actor
+facet policy prune
+
+# 4) Inspect local spend history & Snowtrace invoice links
+facet spend history
+facet spend history --status SETTLED --text
+
+# 5) Configure local MCP stdio adapter for Codex, Claude Code, or Antigravity
+facet mcp install codex|claude|antigravity
 ```
 
-Policies bind to the local wallet profile (`~/.config/facet/policies.json` + `~/.config/facet/spend-ledger.json` for `"default"`), so all local MCP clients (`codex`, `claude`, `antigravity`) share the same enforced caps and cross-process reservation lock. Pass `--profile <name>` (stored under `~/.config/facet/profiles/<name>/`) when you want isolated wallets/caps per agent.
+## Notes
 
-## MCP Client Integration
-
-```bash
-facet mcp install codex         # updates ~/.codex/config.toml (preserving existing servers)
-facet mcp install claude        # configures Claude Code user scope (via CLI or ~/.claude.json)
-facet mcp install antigravity   # updates ~/.gemini/antigravity/mcp_config.json
-facet mcp config codex          # prints a pasteable snippet without writing files
-```
-
-Pass `--profile <name>` if you want a client isolated to a specific wallet/policy profile (`FACET_PROFILE`). No private keys or local `dist/` paths are ever written into MCP config.
-
-## Verification
-
-```bash
-npm ci
-npm run verify
-```
+- Canonical capability types: `API`, `ACTOR`, `AGENT`.
+- Identifiers: `provider` (`users.username`, `8–16` lowercase hyphenated kebab-case), `facetName` (`4–32` lowercase hyphenated kebab-case), `facetDisplayName`, and SemVer `version` (`MAJOR.MINOR.PATCH`).
+- Runtime support: Node.js `>=22.0.0`.
