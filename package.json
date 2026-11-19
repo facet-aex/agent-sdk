@@ -12,7 +12,7 @@
     "README.md"
   ],
   "bin": {
-    "facet": "./dist/cli.js"
+    "facet": "dist/cli.js"
   },
   "exports": {
     ".": {

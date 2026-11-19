@@ -164,7 +164,7 @@ describe("facet wallet CLI & packaging", () => {
 
     expect(pkg.name).toBe("@facet-aex/cli");
     expect(pkg.private).toBe(false);
-    expect(pkg.bin.facet).toBe("./dist/cli.js");
+    expect(pkg.bin.facet).toBe("dist/cli.js");
     expect(pkg.files).toEqual(["dist", "README.md"]);
     expect(pkg.engines.node).toBe(">=22.0.0");
 
