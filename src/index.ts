@@ -86,16 +86,28 @@ export {
   formatWalletStatusText,
 } from "./cli-format.js";
 export {
+  DEFAULT_PAY_PER_RESULT_MAX_ITEMS_CAP,
   DEFAULT_POLICY_DAILY_CAP_ATOMIC,
   DEFAULT_POLICY_MAX_PER_RUN_ATOMIC,
+  HTTP_METHODS,
+  MAX_PAY_PER_RESULT_ITEMS_CAP,
+  PRICING_MODELS,
   PolicyStore,
   SpendPolicyError,
   addOneMonthUtc,
   authorizePaymentChallenge,
   defaultPolicyStorePath,
+  getGrantPricingOptions,
+  getPolicyGrantWarnings,
+  isValidPricingModel,
   validateGrantAgainstChallenge,
+  type ApiMeta,
   type AuthorizeChallengeInput,
+  type FacetPricingOption,
   type GrantPolicyInput,
+  type HttpMethod,
+  type PinnedPricingOption,
+  type PricingModel,
   type PublicFacetRecord,
   type SpendPolicyErrorCode,
   type SpendPolicyGrant,
@@ -129,7 +141,7 @@ import {
   parseFacetRef,
   type FacetType,
 } from "./identifiers.js";
-import type { PublicFacetRecord } from "./spend-policy.js";
+import type { PricingModel, PublicFacetRecord } from "./spend-policy.js";
 
 export interface FacetClientConfig {
   controlApiUrl: string;
@@ -247,8 +259,15 @@ export class FacetClient {
     category: string;
     inputSchema: Record<string, unknown>;
     code: string;
-    pricingModel?: "PAY_PER_RUN";
+    pricingModel?: PricingModel;
     priceAtomic?: string;
+    maxItemsCap?: number;
+    pricingOptions?: Array<{
+      model: PricingModel;
+      priceAtomic: string;
+      maxItemsCap?: number;
+      isPrimary?: boolean;
+    }>;
     payTo?: string;
     tags?: string[];
   }) {

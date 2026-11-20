@@ -12,6 +12,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { FacetType } from "./identifiers.js";
+import type { PricingModel } from "./spend-policy.js";
 
 export const SNOWTRACE_TX_BASE = "https://testnet.snowtrace.io/tx/" as const;
 const LEDGER_FUJI_CHAIN_ID = 43113 as const;
@@ -53,11 +54,16 @@ export interface SpendLedgerEntry {
   facetDisplayName?: string;
   version?: string;
   facetType?: FacetType;
+  pricingModel?: PricingModel;
   runId?: string;
   amountAtomic: string;
+  depositedAmountAtomic?: string;
+  refundAmountAtomic?: string;
+  itemCount?: number;
   status: SpendEntryStatus;
   utcDay: string;
   paymentTxHash?: string;
+  depositTxHash?: string;
   receiptTxHash?: string;
   payer?: string;
   providerPayTo?: string;
@@ -80,6 +86,8 @@ export interface ReserveOptions {
   facetDisplayName?: string;
   version?: string;
   facetType?: FacetType;
+  pricingModel?: PricingModel;
+  depositedAmountAtomic?: bigint | string;
   runId?: string;
   payer?: string;
   providerPayTo?: string;
@@ -89,7 +97,12 @@ export interface ReserveOptions {
 export interface ConfirmOptions {
   paymentTxHash: string;
   receiptTxHash?: string;
+  depositTxHash?: string;
   amountAtomic?: bigint | string;
+  pricingModel?: PricingModel;
+  depositedAmountAtomic?: bigint | string;
+  refundAmountAtomic?: bigint | string;
+  itemCount?: number;
   runId?: string;
   payer?: string;
   providerPayTo?: string;
@@ -104,10 +117,16 @@ export interface SpendHistoryInvoice {
   facetDisplayName?: string;
   version?: string;
   facetType?: FacetType;
+  pricingModel?: PricingModel;
   status: SpendEntryStatus;
   utcDay: string;
   amountAtomic: string;
   amountFormatted: string;
+  depositedAmountAtomic?: string;
+  depositedAmountFormatted?: string;
+  refundAmountAtomic?: string;
+  refundAmountFormatted?: string;
+  itemCount?: number;
   assetSymbol: typeof LEDGER_FUSD_SYMBOL;
   decimals: typeof LEDGER_FUSD_DECIMALS;
   chainId: typeof LEDGER_FUJI_CHAIN_ID;
@@ -115,6 +134,8 @@ export interface SpendHistoryInvoice {
   providerPayTo?: string;
   paymentTxHash?: string;
   paymentSnowtraceUrl?: string;
+  depositTxHash?: string;
+  depositSnowtraceUrl?: string;
   receiptTxHash?: string;
   receiptSnowtraceUrl?: string;
   errorCode?: string;
@@ -364,6 +385,15 @@ export class SpendLedger {
       options.dailyCapAtomic !== undefined
         ? parsePositiveAtomic(options.dailyCapAtomic, "dailyCapAtomic")
         : undefined;
+    const depositedAmountStr =
+      options.depositedAmountAtomic !== undefined
+        ? parsePositiveAtomic(
+            options.depositedAmountAtomic,
+            "depositedAmountAtomic",
+          ).toString()
+        : options.pricingModel === "PAY_PER_RESULT"
+          ? amountStr
+          : undefined;
 
     return this.withFileLock(async () => {
       const ledger = await this.readLedger();
@@ -377,7 +407,21 @@ export class SpendLedger {
         existing &&
         (existing.status === "PENDING" || existing.status === "SETTLED")
       ) {
-        if (existing.amountAtomic === amountStr) {
+        if (
+          existing.pricingModel &&
+          options.pricingModel &&
+          existing.pricingModel !== options.pricingModel
+        ) {
+          throw new SpendLedgerError(
+            "RESERVATION_CONFLICT",
+            `Reservation ${runKey} already exists with a different pricingModel (${existing.pricingModel}).`,
+          );
+        }
+        if (
+          existing.amountAtomic === amountStr ||
+          (existing.status === "SETTLED" &&
+            existing.depositedAmountAtomic === amountStr)
+        ) {
           return existing;
         }
         throw new SpendLedgerError(
@@ -426,8 +470,12 @@ export class SpendLedger {
           : {}),
         ...(options.version ? { version: options.version } : {}),
         ...(options.facetType ? { facetType: options.facetType } : {}),
+        ...(options.pricingModel ? { pricingModel: options.pricingModel } : {}),
         ...(options.runId ? { runId: options.runId } : {}),
         amountAtomic: amountStr,
+        ...(depositedAmountStr
+          ? { depositedAmountAtomic: depositedAmountStr }
+          : {}),
         status: "PENDING",
         utcDay: currentDay,
         ...(options.payer ? { payer: options.payer } : {}),
@@ -462,6 +510,34 @@ export class SpendLedger {
         : txOrDetails;
     const now = details.now ?? options?.now ?? new Date();
 
+    if (details.itemCount !== undefined) {
+      if (
+        typeof details.itemCount !== "number" ||
+        !Number.isSafeInteger(details.itemCount) ||
+        details.itemCount < 0
+      ) {
+        throw new SpendLedgerError(
+          "INVALID_AMOUNT",
+          "itemCount must be a non-negative integer.",
+        );
+      }
+    }
+
+    const parsedDeposited =
+      details.depositedAmountAtomic !== undefined
+        ? parsePositiveAtomic(
+            details.depositedAmountAtomic,
+            "depositedAmountAtomic",
+          ).toString()
+        : undefined;
+    const parsedRefund =
+      details.refundAmountAtomic !== undefined
+        ? parseNonNegativeAtomic(
+            details.refundAmountAtomic,
+            "refundAmountAtomic",
+          ).toString()
+        : undefined;
+
     return this.withFileLock(async () => {
       const ledger = await this.readLedger();
       const index = ledger.entries.findIndex((entry) => entry.runKey === runKey);
@@ -482,12 +558,36 @@ export class SpendLedger {
         details.amountAtomic !== undefined
           ? parseNonNegativeAtomic(details.amountAtomic, "amountAtomic").toString()
           : undefined;
+      const effectivePricingModel = details.pricingModel ?? entry.pricingModel;
+      const effectiveDeposited = parsedDeposited ?? entry.depositedAmountAtomic;
+      const finalAmount = settledAmount ?? entry.amountAtomic;
+      let effectiveRefund = parsedRefund ?? entry.refundAmountAtomic;
+      if (
+        effectiveRefund === undefined &&
+        effectivePricingModel === "PAY_PER_RESULT" &&
+        effectiveDeposited !== undefined
+      ) {
+        const diff = BigInt(effectiveDeposited) - BigInt(finalAmount);
+        if (diff >= 0n) {
+          effectiveRefund = diff.toString();
+        }
+      }
+
       if (
         entry.status === "SETTLED" &&
         entry.paymentTxHash === details.paymentTxHash &&
         (!details.receiptTxHash ||
           entry.receiptTxHash === details.receiptTxHash) &&
-        (settledAmount === undefined || entry.amountAtomic === settledAmount)
+        (!details.depositTxHash ||
+          entry.depositTxHash === details.depositTxHash) &&
+        (settledAmount === undefined || entry.amountAtomic === settledAmount) &&
+        (effectivePricingModel === undefined ||
+          entry.pricingModel === effectivePricingModel) &&
+        (effectiveDeposited === undefined ||
+          entry.depositedAmountAtomic === effectiveDeposited) &&
+        (effectiveRefund === undefined ||
+          entry.refundAmountAtomic === effectiveRefund) &&
+        (details.itemCount === undefined || entry.itemCount === details.itemCount)
       ) {
         return entry;
       }
@@ -496,7 +596,22 @@ export class SpendLedger {
         ...entry,
         status: "SETTLED",
         paymentTxHash: details.paymentTxHash,
+        ...(effectivePricingModel
+          ? { pricingModel: effectivePricingModel }
+          : {}),
         ...(settledAmount !== undefined ? { amountAtomic: settledAmount } : {}),
+        ...(effectiveDeposited !== undefined
+          ? { depositedAmountAtomic: effectiveDeposited }
+          : {}),
+        ...(effectiveRefund !== undefined
+          ? { refundAmountAtomic: effectiveRefund }
+          : {}),
+        ...(details.itemCount !== undefined
+          ? { itemCount: details.itemCount }
+          : {}),
+        ...(details.depositTxHash
+          ? { depositTxHash: details.depositTxHash }
+          : {}),
         ...(details.receiptTxHash
           ? { receiptTxHash: details.receiptTxHash }
           : {}),
@@ -516,10 +631,22 @@ export class SpendLedger {
   async release(
     runKey: string,
     reason?: string,
-    options?: { status?: "RELEASED" | "FAILED"; now?: Date },
+    options?: {
+      status?: "RELEASED" | "FAILED";
+      refundTxHash?: string;
+      refundAmountAtomic?: bigint | string;
+      now?: Date;
+    },
   ): Promise<SpendLedgerEntry> {
     const now = options?.now ?? new Date();
     const targetStatus = options?.status ?? "RELEASED";
+    const parsedRefund =
+      options?.refundAmountAtomic !== undefined
+        ? parseNonNegativeAtomic(
+            options.refundAmountAtomic,
+            "refundAmountAtomic",
+          ).toString()
+        : undefined;
 
     return this.withFileLock(async () => {
       const ledger = await this.readLedger();
@@ -537,7 +664,11 @@ export class SpendLedger {
           `Cannot release settled reservation ${runKey}.`,
         );
       }
-      if (entry.status === targetStatus) {
+      if (
+        entry.status === targetStatus &&
+        (!options?.refundTxHash || entry.paymentTxHash === options.refundTxHash) &&
+        (parsedRefund === undefined || entry.refundAmountAtomic === parsedRefund)
+      ) {
         return entry;
       }
 
@@ -545,6 +676,10 @@ export class SpendLedger {
         ...entry,
         status: targetStatus,
         ...(reason ? { errorCode: reason } : {}),
+        ...(options?.refundTxHash ? { paymentTxHash: options.refundTxHash } : {}),
+        ...(parsedRefund !== undefined
+          ? { refundAmountAtomic: parsedRefund }
+          : {}),
         updatedAt: now.toISOString(),
       };
       ledger.entries[index] = updated;
@@ -610,10 +745,28 @@ export function formatSpendHistory(
         : {}),
       ...(entry.version ? { version: entry.version } : {}),
       ...(entry.facetType ? { facetType: entry.facetType } : {}),
+      ...(entry.pricingModel ? { pricingModel: entry.pricingModel } : {}),
       status: entry.status,
       utcDay: entry.utcDay,
       amountAtomic: entry.amountAtomic,
       amountFormatted: formatAtomicFusd(amount),
+      ...(entry.depositedAmountAtomic !== undefined
+        ? {
+            depositedAmountAtomic: entry.depositedAmountAtomic,
+            depositedAmountFormatted: formatAtomicFusd(
+              BigInt(entry.depositedAmountAtomic),
+            ),
+          }
+        : {}),
+      ...(entry.refundAmountAtomic !== undefined
+        ? {
+            refundAmountAtomic: entry.refundAmountAtomic,
+            refundAmountFormatted: formatAtomicFusd(
+              BigInt(entry.refundAmountAtomic),
+            ),
+          }
+        : {}),
+      ...(entry.itemCount !== undefined ? { itemCount: entry.itemCount } : {}),
       assetSymbol: LEDGER_FUSD_SYMBOL,
       decimals: LEDGER_FUSD_DECIMALS,
       chainId: LEDGER_FUJI_CHAIN_ID,
@@ -623,6 +776,12 @@ export function formatSpendHistory(
         ? {
             paymentTxHash: entry.paymentTxHash,
             paymentSnowtraceUrl: snowtraceTxUrl(entry.paymentTxHash),
+          }
+        : {}),
+      ...(entry.depositTxHash
+        ? {
+            depositTxHash: entry.depositTxHash,
+            depositSnowtraceUrl: snowtraceTxUrl(entry.depositTxHash),
           }
         : {}),
       ...(entry.status === "SETTLED" && entry.receiptTxHash
@@ -670,11 +829,44 @@ export function formatSpendHistoryText(
     lines.push(
       `- [${inv.status}] ${label}${title} | ${inv.amountFormatted} fUSD (${inv.amountAtomic} atomic) | ${inv.createdAt}`,
     );
+    if (
+      inv.pricingModel === "PAY_PER_RESULT" ||
+      inv.depositedAmountAtomic !== undefined ||
+      inv.refundAmountAtomic !== undefined ||
+      inv.itemCount !== undefined
+    ) {
+      const escrowParts: string[] = [];
+      if (inv.pricingModel) {
+        escrowParts.push(`model: ${inv.pricingModel}`);
+      }
+      if (inv.depositedAmountAtomic !== undefined && inv.depositedAmountFormatted !== undefined) {
+        escrowParts.push(
+          `deposited: ${inv.depositedAmountFormatted} fUSD (${inv.depositedAmountAtomic} atomic)`,
+        );
+      }
+      if (inv.refundAmountAtomic !== undefined && inv.refundAmountFormatted !== undefined) {
+        escrowParts.push(
+          `refunded: ${inv.refundAmountFormatted} fUSD (${inv.refundAmountAtomic} atomic)`,
+        );
+      }
+      if (inv.itemCount !== undefined) {
+        escrowParts.push(`items: ${inv.itemCount}`);
+      }
+      lines.push(`  escrow: ${escrowParts.join(" | ")}`);
+    } else if (inv.pricingModel) {
+      lines.push(`  pricing: ${inv.pricingModel}`);
+    }
+    if (inv.errorCode) {
+      lines.push(`  reason: ${inv.errorCode}`);
+    }
     if (inv.runId) {
       lines.push(`  runId: ${inv.runId}`);
     }
     if (inv.providerPayTo) {
       lines.push(`  payTo: ${inv.providerPayTo}`);
+    }
+    if (inv.depositSnowtraceUrl) {
+      lines.push(`  deposit: ${inv.depositSnowtraceUrl}`);
     }
     if (inv.paymentSnowtraceUrl) {
       lines.push(`  payment: ${inv.paymentSnowtraceUrl}`);

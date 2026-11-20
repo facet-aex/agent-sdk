@@ -13,7 +13,11 @@ import {
   addOneMonthUtc,
   authorizePaymentChallenge,
   defaultPolicyStorePath,
+  getGrantPricingOptions,
+  getPolicyGrantWarnings,
+  validateGrantAgainstChallenge,
   type PublicFacetRecord,
+  type SpendPolicyGrant,
 } from "../src/spend-policy.js";
 import { defaultSpendLedgerPath } from "../src/spend-ledger.js";
 import { runCli } from "../src/cli.js";
@@ -425,5 +429,260 @@ describe("SpendPolicy Option B store & authorization", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("supports multi-pricing grants, --pricing-model selection, grant warnings, verified API facets, and strict PAY_PER_RESULT validation", async () => {
+    const dir = await makeTempDir();
+    const store = new PolicyStore({ filePath: join(dir, "policies.json") });
+    const payTo = "0x9265c1c87fC5fb3C72Dc68b4D3A005dE1E22C3cf";
+    const dualPricingFacet: PublicFacetRecord = {
+      ...sampleVerifiedFacet(),
+      facetName: "vn-tech-news-actor",
+      facetDisplayName: "VN Tech & Macro News Extractor",
+      pricing: {
+        model: "PAY_PER_RUN",
+        priceAtomic: "10000",
+        maxAmountAtomic: "10000",
+        assetAddress: FUSD_ASSET_ADDRESS,
+        chainId: FUJI_CHAIN_ID,
+        payTo,
+        isPrimary: true,
+      },
+      pricingOptions: [
+        {
+          model: "PAY_PER_RUN",
+          priceAtomic: "10000",
+          maxAmountAtomic: "10000",
+          assetAddress: FUSD_ASSET_ADDRESS,
+          chainId: FUJI_CHAIN_ID,
+          payTo,
+          isPrimary: true,
+        },
+        {
+          model: "PAY_PER_RESULT",
+          priceAtomic: "500",
+          maxItemsCap: 20,
+          maxAmountAtomic: "10000",
+          assetAddress: FUSD_ASSET_ADDRESS,
+          chainId: FUJI_CHAIN_ID,
+          payTo,
+          isPrimary: false,
+        },
+      ],
+    };
+
+    // 1. Grant without pricingModel pins both options; default maxPerRunAtomic=1000 produces warnings
+    const dualGrant = await store.grant({
+      facet: dualPricingFacet,
+      expiresAt: "2030-01-01T00:00:00Z",
+    });
+    expect(getGrantPricingOptions(dualGrant)).toEqual([
+      {
+        model: "PAY_PER_RUN",
+        priceAtomic: "10000",
+        maxAmountAtomic: "10000",
+      },
+      {
+        model: "PAY_PER_RESULT",
+        priceAtomic: "500",
+        maxItemsCap: 20,
+        maxAmountAtomic: "10000",
+      },
+    ]);
+    expect(dualGrant.pricingModel).toBe("PAY_PER_RUN");
+    expect(dualGrant.pinnedPriceAtomic).toBe("10000");
+
+    const warnings = getPolicyGrantWarnings(dualGrant);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain("PAY_PER_RUN");
+    expect(warnings[1]).toContain("PAY_PER_RESULT");
+    expect(warnings.join("\n")).not.toMatch(/\bfuji\b/iu);
+
+    // Grant with sufficient maxPerRunAtomic emits no warnings and validates same-amount disambiguation
+    const sufficientDualGrant = await store.grant({
+      facet: dualPricingFacet,
+      maxPerRunAtomic: "10000",
+      dailyCapAtomic: "50000",
+      expiresAt: "2030-01-01T00:00:00Z",
+    });
+    expect(getPolicyGrantWarnings(sufficientDualGrant)).toEqual([]);
+
+    const baseChallenge = {
+      provider: dualPricingFacet.provider,
+      facetName: dualPricingFacet.facetName,
+      version: dualPricingFacet.version,
+      chainId: FUJI_CHAIN_ID,
+      assetAddress: FUSD_ASSET_ADDRESS,
+      settlementPayTo: FACET_FEE_SPLIT_ADDRESS,
+      providerPayTo: payTo,
+    };
+
+    expect(
+      validateGrantAgainstChallenge(sufficientDualGrant, {
+        ...baseChallenge,
+        pricingModel: "PAY_PER_RUN",
+        unitPriceAtomic: "10000",
+        amountAtomic: "10000",
+      }).provider,
+    ).toBe(dualPricingFacet.provider);
+
+    expect(
+      validateGrantAgainstChallenge(sufficientDualGrant, {
+        ...baseChallenge,
+        pricingModel: "PAY_PER_RESULT",
+        unitPriceAtomic: "500",
+        maxItemsCap: 20,
+        amountAtomic: "10000",
+      }).provider,
+    ).toBe(dualPricingFacet.provider);
+
+    // Rejects tampered unitPriceAtomic, maxItemsCap, PAY_PER_RUN + maxItemsCap, and amount !== unitPrice * maxItemsCap
+    expect(() =>
+      validateGrantAgainstChallenge(sufficientDualGrant, {
+        ...baseChallenge,
+        pricingModel: "PAY_PER_RESULT",
+        unitPriceAtomic: "501",
+        maxItemsCap: 20,
+        amountAtomic: "10000",
+      }),
+    ).toThrowError(expect.objectContaining({ code: "POLICY_PRICE_MISMATCH" }));
+
+    expect(() =>
+      validateGrantAgainstChallenge(sufficientDualGrant, {
+        ...baseChallenge,
+        pricingModel: "PAY_PER_RESULT",
+        unitPriceAtomic: "500",
+        maxItemsCap: 10,
+        amountAtomic: "5000",
+      }),
+    ).toThrowError(expect.objectContaining({ code: "POLICY_PRICE_MISMATCH" }));
+
+    expect(() =>
+      validateGrantAgainstChallenge(sufficientDualGrant, {
+        ...baseChallenge,
+        pricingModel: "PAY_PER_RESULT",
+        unitPriceAtomic: "500",
+        maxItemsCap: 20,
+        amountAtomic: "9500",
+      }),
+    ).toThrowError(expect.objectContaining({ code: "POLICY_PRICE_MISMATCH" }));
+
+    expect(() =>
+      validateGrantAgainstChallenge(sufficientDualGrant, {
+        ...baseChallenge,
+        pricingModel: "PAY_PER_RUN",
+        unitPriceAtomic: "10000",
+        maxItemsCap: 20,
+        amountAtomic: "10000",
+      }),
+    ).toThrowError(expect.objectContaining({ code: "POLICY_PRICE_MISMATCH" }));
+
+    // 2. Grant with explicit pricingModel pins only that pricingModel and rejects ungranted model
+    const singleGrant = await store.grant({
+      facet: dualPricingFacet,
+      pricingModel: "PAY_PER_RESULT",
+      maxPerRunAtomic: "10000",
+      dailyCapAtomic: "50000",
+      expiresAt: "2030-01-01T00:00:00Z",
+    });
+    expect(getGrantPricingOptions(singleGrant)).toEqual([
+      {
+        model: "PAY_PER_RESULT",
+        priceAtomic: "500",
+        maxItemsCap: 20,
+        maxAmountAtomic: "10000",
+      },
+    ]);
+    expect(singleGrant.pricingModel).toBe("PAY_PER_RESULT");
+    expect(singleGrant.pinnedPriceAtomic).toBe("500");
+
+    expect(() =>
+      validateGrantAgainstChallenge(singleGrant, {
+        ...baseChallenge,
+        pricingModel: "PAY_PER_RUN",
+        unitPriceAtomic: "10000",
+        amountAtomic: "10000",
+      }),
+    ).toThrowError(expect.objectContaining({ code: "POLICY_PRICE_MISMATCH" }));
+
+    // 3. Verified API facets allowed; unverified API facets rejected with Avalanche copy
+    const unverifiedApi: PublicFacetRecord = {
+      provider: "tai-hung-dev",
+      facetName: "market-prices-api",
+      facetDisplayName: "Market Prices API",
+      version: "1.0.0",
+      facetType: "API",
+      pricing: {
+        model: "PAY_PER_RUN",
+        priceAtomic: "1000",
+        assetAddress: FUSD_ASSET_ADDRESS,
+        chainId: FUJI_CHAIN_ID,
+        payTo,
+      },
+      apiMeta: {
+        method: "GET",
+        pathTemplate: "/v1/prices",
+        registryVerified: false,
+      },
+    };
+    let apiErr: unknown;
+    try {
+      await store.grant({
+        facet: unverifiedApi,
+        expiresAt: "2030-01-01T00:00:00Z",
+      });
+    } catch (error) {
+      apiErr = error;
+    }
+    expect(apiErr).toMatchObject({ code: "UNVERIFIED_FACET_REGISTRY" });
+    expect((apiErr as Error).message).not.toMatch(/\bfuji\b/iu);
+
+    const verifiedApi: PublicFacetRecord = {
+      ...unverifiedApi,
+      apiMeta: {
+        method: "GET",
+        pathTemplate: "/v1/prices",
+        datasetPath: "data.items",
+        registryVerified: true,
+        registryTxHash: "0x" + "4".repeat(64),
+      },
+    };
+    const apiGrant = await store.grant({
+      facet: verifiedApi,
+      maxPerRunAtomic: "1000",
+      dailyCapAtomic: "10000",
+      expiresAt: "2030-01-01T00:00:00Z",
+    });
+    expect(apiGrant.facetType).toBe("API");
+    expect(apiGrant.registryTxHash).toBe("0x" + "4".repeat(64));
+
+    // 4. Legacy v2 grant without pricingOptions falls back cleanly
+    const legacyV2Grant: SpendPolicyGrant = {
+      provider: "tai-hung-dev",
+      facetName: "legacy-actor",
+      facetDisplayName: "Legacy Actor",
+      version: "1.0.0",
+      facetType: "ACTOR",
+      chainId: FUJI_CHAIN_ID,
+      network: "eip155:43113",
+      assetAddress: FUSD_ASSET_ADDRESS,
+      settlementContract: FACET_FEE_SPLIT_ADDRESS,
+      providerPayTo: payTo,
+      pricingModel: "PAY_PER_RUN",
+      pinnedPriceAtomic: "1000",
+      maxPerRunAtomic: "1000",
+      dailyCapAtomic: "10000",
+      dayBoundary: "UTC",
+      expiresAt: "2030-01-01T00:00:00Z",
+      registryTxHash: "0x" + "1".repeat(64),
+      grantedAt: "2026-11-18T00:00:00Z",
+    };
+    expect(getGrantPricingOptions(legacyV2Grant)).toEqual([
+      {
+        model: "PAY_PER_RUN",
+        priceAtomic: "1000",
+        maxAmountAtomic: "1000",
+      },
+    ]);
   });
 });
