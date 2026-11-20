@@ -1,41 +1,30 @@
-# `@facet-aex/cli`
+# FACET CLI & SDK (`@facet-aex/cli`)
 
-Buyer CLI and TypeScript library for Avalanche local wallet custody, default-deny spending policies, local spend history invoices, and MCP client configuration.
+[![FACET](https://img.shields.io/badge/FACET-facet.briandev.space-050505?style=flat-square&labelColor=DFFF4F)](https://facet.briandev.space)
+[![Layer](https://img.shields.io/badge/CLI%20%26%20SDK-BUYER%20TOOLKIT-0D0D0D?style=flat-square&labelColor=343434)](https://github.com/facet-aex)
 
-All CLI commands emit human-readable output by default. Pass `--json` to any command when structured JSON is needed for scripting.
+> Public buyer CLI (`facet`) and TypeScript SDK for local Avalanche wallet custody, default-deny spend policies, spend history, and MCP installation.
 
-## Quickstart
+## Overview
 
-```bash
-# 1) Create a protected Avalanche wallet (stored in OS credential store, never plaintext)
-facet wallet create
-facet wallet status
+`agent-sdk` (published to npm as `@facet-aex/cli`) is the client toolkit for **FACET** consumers and AI agent operators. It provisions a local payer wallet, enforces human-approved spending boundaries, tracks local settlement invoices, and configures MCP integrations without exposing private keys to AI models.
 
-# 2) Discover and inspect Facets
-facet search --type ACTOR
-facet inspect tai-hung-dev/vn-gold-fx-actor
+## Role in FACET
 
-# 3) Grant policy (uses Option B natural keys + strict SemVer, defaults: latest version, 1000 max-per-run, 10000 daily-cap, +1 UTC month)
-facet policy grant --facet tai-hung-dev/vn-gold-fx-actor
-# Or with explicit separated fields & pinned SemVer:
-facet policy grant --provider tai-hung-dev --facet vn-gold-fx-actor --version 1.0.0
+- **Local Wallet Custody:** Generates and inspects local Avalanche buyer wallets stored in the operating system credential store rather than plaintext environment variables.
+- **Default-Deny Spend Policies:** Grants, inspects, revokes, and prunes per-run and daily `fUSD` spending limits pinned to exact `provider`, `facetName`, SemVer `version`, and verified `providerPayTo` targets.
+- **Spend Ledger & Discovery:** Searches and inspects published `API`, `ACTOR`, and `AGENT` Facets and queries local settlement history with Snowtrace transaction references.
+- **MCP Client Setup:** Installs and configures `@facet-aex/mcp-server` for Codex, Claude Code, Antigravity, and standard MCP hosts.
 
-# 4) Inspect or prune policies
-facet policy show
-facet policy revoke --facet tai-hung-dev/vn-gold-fx-actor
-facet policy prune
+## Tech Stack
 
-# 5) Inspect local spend history & Snowtrace invoice links
-facet spend history
-facet spend history --status SETTLED --json
+| Layer | Technology |
+|---|---|
+| Language & Runtime | TypeScript, Node.js (`>=22.0.0`, ESM) |
+| Web3 & Custody | `viem`, OS credential store |
+| Distribution | Public npm (`@facet-aex/cli`, OIDC Trusted Publishing) |
+| Testing | Vitest |
 
-# 6) Configure local MCP stdio adapter for Codex, Claude Code, or Antigravity
-facet mcp install codex|claude|antigravity
-```
+---
 
-## Notes
-
-- Output mode: human-readable text by default across all commands; add `--json` anywhere for JSON output.
-- Canonical capability types: `API`, `ACTOR`, `AGENT`.
-- Identifiers: `provider` (`users.username`, `8–16` lowercase hyphenated kebab-case), `facetName` (`4–32` lowercase hyphenated kebab-case), `facetDisplayName`, and SemVer `version` (`MAJOR.MINOR.PATCH`).
-- Runtime support: Node.js `>=22.0.0`.
+Part of **[FACET](https://facet.briandev.space)** (`facet-aex`) — Federated Agent Capability Exchange & Trust on Avalanche · [Documentation](https://facet.briandev.space/docs)
