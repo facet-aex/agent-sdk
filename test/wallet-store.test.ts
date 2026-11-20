@@ -215,16 +215,37 @@ describe("Fuji wallet status", () => {
       balanceAtomic: "250000",
       balanceFormatted: "0.250000",
       fundingNote:
-        "FacetUSD on Fuji is owner-minted; top up via explicit operator transfer to this address.",
+        "Fund this Avalanche wallet with testnet fUSD via /faucet on FACET or an explicit transfer.",
     });
+    expect(status.fundingNote).not.toMatch(/\bfuji\b/iu);
 
     const wrongChainClient: FujiRpcClient = {
       getChainId: vi.fn(async () => 43114),
       readFusdBalance: vi.fn(async () => 0n),
     };
 
-    await expect(
-      readFujiWalletStatus(address, { client: wrongChainClient }),
-    ).rejects.toMatchObject({ code: "WRONG_CHAIN_ID" });
+    let wrongChainErr: unknown;
+    try {
+      await readFujiWalletStatus(address, { client: wrongChainClient });
+    } catch (error) {
+      wrongChainErr = error;
+    }
+    expect(wrongChainErr).toMatchObject({ code: "WRONG_CHAIN_ID" });
+    expect((wrongChainErr as Error).message).not.toMatch(/\bfuji\b/iu);
+
+    const rpcFailClient: FujiRpcClient = {
+      getChainId: vi.fn(async () => {
+        throw new Error("RPC down");
+      }),
+      readFusdBalance: vi.fn(async () => 0n),
+    };
+    let rpcErr: unknown;
+    try {
+      await readFujiWalletStatus(address, { client: rpcFailClient });
+    } catch (error) {
+      rpcErr = error;
+    }
+    expect(rpcErr).toMatchObject({ code: "FUJI_RPC_ERROR" });
+    expect((rpcErr as Error).message).not.toMatch(/\bfuji\b/iu);
   });
 });

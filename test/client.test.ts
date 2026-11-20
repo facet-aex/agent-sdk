@@ -159,4 +159,97 @@ describe("FacetClient SDK & search/inspect CLI output", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it("renders multi-pricing options and verified API apiMeta in search and inspect output without Fuji copy", async () => {
+    const apiFacet = {
+      provider: "tai-hung-dev",
+      facetName: "vn-prices-api",
+      facetDisplayName: "VN Prices API",
+      version: "1.0.0",
+      facetType: "API",
+      description: "Live Vietnam market prices API.",
+      pricing: {
+        model: "PAY_PER_RUN",
+        priceAtomic: "1000",
+        maxAmountAtomic: "1000",
+        assetAddress: "0xe7082a54a456dc4dfe0ceadcd0d0dce7d8ba176f",
+        chainId: 43113,
+        payTo: "0x9265c1c87fC5fb3C72Dc68b4D3A005dE1E22C3cf",
+        isPrimary: true,
+      },
+      pricingOptions: [
+        {
+          model: "PAY_PER_RUN",
+          priceAtomic: "1000",
+          maxAmountAtomic: "1000",
+          assetAddress: "0xe7082a54a456dc4dfe0ceadcd0d0dce7d8ba176f",
+          chainId: 43113,
+          payTo: "0x9265c1c87fC5fb3C72Dc68b4D3A005dE1E22C3cf",
+          isPrimary: true,
+        },
+        {
+          model: "PAY_PER_RESULT",
+          priceAtomic: "500",
+          maxItemsCap: 10,
+          maxAmountAtomic: "5000",
+          assetAddress: "0xe7082a54a456dc4dfe0ceadcd0d0dce7d8ba176f",
+          chainId: 43113,
+          payTo: "0x9265c1c87fC5fb3C72Dc68b4D3A005dE1E22C3cf",
+          isPrimary: false,
+        },
+      ],
+      apiMeta: {
+        method: "GET",
+        pathTemplate: "/v1/prices",
+        datasetPath: "data.items",
+        registryTxHash: "0x" + "8".repeat(64),
+        registryVerified: true,
+      },
+    };
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL | string) => {
+        const href = String(url);
+        if (href.includes("/v1/catalog/facets/tai-hung-dev/vn-prices-api")) {
+          return new Response(JSON.stringify({ facet: apiFacet }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ facets: [apiFacet] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+
+    try {
+      const searchOut: string[] = [];
+      expect(
+        await runCli(["search", "prices", "--type", "API"], {
+          stdout: (line) => searchOut.push(line),
+        }),
+      ).toBe(0);
+      expect(searchOut[0]).toContain("PAY_PER_RUN");
+      expect(searchOut[0]).toContain("PAY_PER_RESULT");
+      expect(searchOut[0]).toContain("verified on Avalanche");
+      expect(searchOut[0]).toContain("GET /v1/prices");
+      expect(searchOut[0]).not.toMatch(/\bfuji\b/iu);
+
+      const inspectOut: string[] = [];
+      expect(
+        await runCli(["inspect", "tai-hung-dev/vn-prices-api"], {
+          stdout: (line) => inspectOut.push(line),
+        }),
+      ).toBe(0);
+      expect(inspectOut[0]).toContain("PAY_PER_RUN");
+      expect(inspectOut[0]).toContain("PAY_PER_RESULT");
+      expect(inspectOut[0]).toContain("GET /v1/prices");
+      expect(inspectOut[0]).toContain("data.items");
+      expect(inspectOut[0]).not.toMatch(/\bfuji\b/iu);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

@@ -1,7 +1,13 @@
 import { formatFusdAtomic, type FujiWalletStatus } from "./fuji-wallet.js";
 import type { InstallMcpResult } from "./mcp-install.js";
 import { parseNonNegativeAtomic, snowtraceTxUrl } from "./spend-ledger.js";
-import type { PublicFacetRecord, SpendPolicyGrant } from "./spend-policy.js";
+import {
+  getGrantPricingOptions,
+  getPolicyGrantWarnings,
+  type PricingModel,
+  type PublicFacetRecord,
+  type SpendPolicyGrant,
+} from "./spend-policy.js";
 import type { WalletCreateResult, WalletImportResult } from "./wallet-store.js";
 
 function formatAtomicWithSymbol(atomic: string): string {
@@ -13,6 +19,30 @@ function formatAtomicWithSymbol(atomic: string): string {
   }
 }
 
+type CatalogPricingDisplay = NonNullable<PublicFacetRecord["pricing"]>;
+
+function formatPricingOptionSummary(
+  opt: {
+    model: PricingModel;
+    priceAtomic: string;
+    maxItemsCap?: number;
+    maxAmountAtomic?: string;
+    isPrimary?: boolean;
+  },
+  includePrimaryTag = false,
+): string {
+  const primaryTag = includePrimaryTag && opt.isPrimary ? " [primary]" : "";
+  if (opt.model === "PAY_PER_RESULT") {
+    const capPart =
+      opt.maxItemsCap !== undefined ? `, cap ${opt.maxItemsCap}` : "";
+    const maxPart = opt.maxAmountAtomic
+      ? `, max ${formatAtomicWithSymbol(opt.maxAmountAtomic)}`
+      : "";
+    return `${formatAtomicWithSymbol(opt.priceAtomic)}/item (PAY_PER_RESULT${capPart}${maxPart})${primaryTag}`;
+  }
+  return `${formatAtomicWithSymbol(opt.priceAtomic)} (PAY_PER_RUN)${primaryTag}`;
+}
+
 export function formatWalletCreateText(
   profile: string,
   result: WalletCreateResult,
@@ -20,9 +50,9 @@ export function formatWalletCreateText(
   return [
     `FACET Wallet Created (profile: ${profile})`,
     `  Address : ${result.address}`,
-    `  Network : Avalanche Fuji (${result.chainId} / ${result.network})`,
+    `  Network : Avalanche (${result.chainId} / ${result.network})`,
     `  Storage : Protected OS credential store (private key never displayed)`,
-    `  Next    : Fund with Fuji AVAX + fUSD, then run \`facet wallet status\``,
+    `  Next    : Fund with Avalanche fUSD via /faucet on FACET, then run \`facet wallet status\``,
   ].join("\n");
 }
 
@@ -33,7 +63,7 @@ export function formatWalletImportText(
   return [
     `FACET Wallet Imported (profile: ${profile})`,
     `  Address : ${result.address}`,
-    `  Network : Avalanche Fuji (${result.chainId} / ${result.network})`,
+    `  Network : Avalanche (${result.chainId} / ${result.network})`,
     `  Storage : Protected OS credential store`,
   ].join("\n");
 }
@@ -45,7 +75,7 @@ export function formatWalletStatusText(
   return [
     `FACET Wallet Status (profile: ${profile})`,
     `  Address : ${status.address}`,
-    `  Network : Avalanche Fuji (${status.chainId} / ${status.network})`,
+    `  Network : Avalanche (${status.chainId} / ${status.network})`,
     `  Balance : ${status.balanceFormatted} ${status.symbol} (${status.balanceAtomic} atomic)`,
     `  Asset   : ${status.assetAddress}`,
     `  Note    : ${status.fundingNote}`,
@@ -63,24 +93,36 @@ export function formatFacetSearchText(facets: PublicFacetRecord[]): string {
       `\n${index + 1}. ${facet.provider}/${facet.facetName}@${facet.version}  [${facet.facetType}]`,
     );
     lines.push(`   Title   : ${facet.facetDisplayName}`);
-    if (facet.description) {
-      lines.push(`   Summary : ${facet.description}`);
+    const summaryText = facet.summary ?? facet.description;
+    if (summaryText) {
+      lines.push(`   Summary : ${summaryText}`);
     }
-    if (facet.pricing) {
-      lines.push(
-        `   Pricing : ${formatAtomicWithSymbol(facet.pricing.priceAtomic)} (${facet.pricing.model})`,
+    const pricingOptions: CatalogPricingDisplay[] =
+      facet.pricingOptions && facet.pricingOptions.length > 0
+        ? facet.pricingOptions
+        : facet.pricing
+          ? [facet.pricing]
+          : [];
+    if (pricingOptions.length > 0) {
+      const formattedOptions = pricingOptions.map((opt) =>
+        formatPricingOptionSummary(opt, pricingOptions.length > 1),
       );
-      lines.push(`   Pay To  : ${facet.pricing.payTo}`);
+      lines.push(`   Pricing : ${formattedOptions.join(" | ")}`);
+      lines.push(`   Pay To  : ${pricingOptions[0]!.payTo}`);
     } else {
       lines.push("   Pricing : free / unpriced");
     }
     if (facet.facetType === "ACTOR") {
       lines.push(
-        `   Registry: ${facet.actorMeta?.registryVerified ? "verified on Fuji" : "unverified"}`,
+        `   Registry: ${facet.actorMeta?.registryVerified ? "verified on Avalanche" : "unverified"}`,
       );
     } else if (facet.facetType === "AGENT") {
       lines.push(
-        `   Registry: ${facet.agentMeta?.registryVerified ? "verified on Fuji" : "unverified"}${facet.agentMeta?.erc8004TokenId ? ` (ERC-8004 #${facet.agentMeta.erc8004TokenId})` : ""}`,
+        `   Registry: ${facet.agentMeta?.registryVerified ? "verified on Avalanche" : "unverified"}${facet.agentMeta?.erc8004TokenId ? ` (ERC-8004 #${facet.agentMeta.erc8004TokenId})` : ""}`,
+      );
+    } else if (facet.facetType === "API") {
+      lines.push(
+        `   Registry: ${facet.apiMeta?.registryVerified ? "verified on Avalanche" : "unverified"}${facet.apiMeta ? ` (${facet.apiMeta.method} ${facet.apiMeta.pathTemplate})` : ""}`,
       );
     }
   });
@@ -145,13 +187,47 @@ export function formatFacetInspectText(facet: PublicFacetRecord): string {
     lines.push(`  Description: ${facet.description}`);
   }
 
-  if (facet.pricing) {
+  const pricingOptions: CatalogPricingDisplay[] =
+    facet.pricingOptions && facet.pricingOptions.length > 0
+      ? facet.pricingOptions
+      : facet.pricing
+        ? [facet.pricing]
+        : [];
+  if (pricingOptions.length > 0) {
+    const first = pricingOptions[0]!;
+    for (const opt of pricingOptions) {
+      const primaryTag =
+        pricingOptions.length > 1 && opt.isPrimary ? " [primary]" : "";
+      if (opt.model === "PAY_PER_RESULT") {
+        const capPart =
+          opt.maxItemsCap !== undefined ? `, cap ${opt.maxItemsCap}` : "";
+        const maxPart = opt.maxAmountAtomic
+          ? `, max ${formatAtomicWithSymbol(opt.maxAmountAtomic)}`
+          : "";
+        lines.push(
+          `  Pricing    : ${formatAtomicWithSymbol(opt.priceAtomic)}/item | PAY_PER_RESULT${capPart}${maxPart}${primaryTag}`,
+        );
+      } else {
+        lines.push(
+          `  Pricing    : ${formatAtomicWithSymbol(opt.priceAtomic)} | PAY_PER_RUN${primaryTag}`,
+        );
+      }
+    }
+    lines.push(`  Pay To     : ${first.payTo}`);
     lines.push(
-      `  Pricing    : ${formatAtomicWithSymbol(facet.pricing.priceAtomic)} | ${facet.pricing.model}`,
+      `  Asset      : ${first.assetAddress} (chainId ${first.chainId})`,
     );
-    lines.push(`  Pay To     : ${facet.pricing.payTo}`);
+  }
+
+  if (facet.apiMeta) {
     lines.push(
-      `  Asset      : ${facet.pricing.assetAddress} (chainId ${facet.pricing.chainId})`,
+      `  Endpoint   : ${facet.apiMeta.method} ${facet.apiMeta.pathTemplate}`,
+    );
+    if (facet.apiMeta.datasetPath) {
+      lines.push(`  Dataset    : ${facet.apiMeta.datasetPath}`);
+    }
+    lines.push(
+      `  Registry   : ${facet.apiMeta.registryVerified ? "verified" : "unverified"}${facet.apiMeta.registryTxHash ? ` (${snowtraceTxUrl(facet.apiMeta.registryTxHash)})` : ""}`,
     );
   }
 
@@ -184,17 +260,26 @@ export function formatPolicyGrantText(
   profile: string,
   policy: SpendPolicyGrant,
 ): string {
-  return [
+  const options = getGrantPricingOptions(policy);
+  const pricingSummary = options
+    .map((opt) => formatPricingOptionSummary(opt))
+    .join(" | ");
+  const warnings = getPolicyGrantWarnings(policy);
+  const lines = [
     `FACET Policy Granted (profile: ${profile})`,
     `  Target     : ${policy.provider}/${policy.facetName}@${policy.version}  [${policy.facetType}] (${policy.facetDisplayName})`,
-    `  Pricing    : ${formatAtomicWithSymbol(policy.pinnedPriceAtomic)} (${policy.pricingModel})`,
+    `  Pricing    : ${pricingSummary}`,
     `  Max / Run  : ${formatAtomicWithSymbol(policy.maxPerRunAtomic)}`,
     `  Daily Cap  : ${formatAtomicWithSymbol(policy.dailyCapAtomic)} (${policy.dayBoundary})`,
     `  Pay To     : ${policy.providerPayTo}`,
     `  Settlement : ${policy.settlementContract} (chainId ${policy.chainId})`,
     `  Expires At : ${policy.expiresAt}`,
     `  Registry Tx: ${snowtraceTxUrl(policy.registryTxHash)}`,
-  ].join("\n");
+  ];
+  for (const warning of warnings) {
+    lines.push(`  ${warning}`);
+  }
+  return lines.join("\n");
 }
 
 function policyBadge(policy: SpendPolicyGrant, now: Date): string {
@@ -219,11 +304,15 @@ export function formatPolicyShowText(
   ];
   for (const policy of result.policies) {
     const badge = policyBadge(policy, now);
+    const options = getGrantPricingOptions(policy);
+    const pricingSummary = options
+    .map((opt) => formatPricingOptionSummary(opt))
+    .join(" | ");
     lines.push(
       `- [${badge}] ${policy.provider}/${policy.facetName}@${policy.version}  [${policy.facetType}] (${policy.facetDisplayName})`,
     );
     lines.push(
-      `  Price: ${formatAtomicWithSymbol(policy.pinnedPriceAtomic)} (${policy.pricingModel}) | Max/Run: ${policy.maxPerRunAtomic} | Daily Cap: ${policy.dailyCapAtomic}`,
+      `  Price: ${pricingSummary} | Max/Run: ${policy.maxPerRunAtomic} | Daily Cap: ${policy.dailyCapAtomic}`,
     );
     lines.push(`  Pay To: ${policy.providerPayTo}`);
     lines.push(
@@ -231,6 +320,9 @@ export function formatPolicyShowText(
         ? `  Revoked At: ${policy.revokedAt} | Expires: ${policy.expiresAt}`
         : `  Expires: ${policy.expiresAt}`,
     );
+    for (const warning of getPolicyGrantWarnings(policy)) {
+      lines.push(`  ${warning}`);
+    }
   }
   return lines.join("\n");
 }
@@ -304,7 +396,7 @@ export function formatCliHelpText(): string {
     "  wallet status [--profile <name>]",
     "  search [query] [--type API|ACTOR|AGENT] [--category <slug>] [--origin <url>]",
     "  inspect (<provider/facet-name> | --provider <provider> --facet <facet-name>) [--version <semver>]",
-    "  policy grant (--facet <provider/facet-name> | --provider <provider> --facet <facet-name>) [--version <semver>] [--max-per-run <atomic>] [--daily-cap <atomic>] [--expires <ISO8601>] [--profile <name>]",
+    "  policy grant (--facet <provider/facet-name> | --provider <provider> --facet <facet-name>) [--version <semver>] [--pricing-model PAY_PER_RUN|PAY_PER_RESULT] [--max-per-run <atomic>] [--daily-cap <atomic>] [--expires <ISO8601>] [--profile <name>]",
     "  policy show [--provider <provider>] [--facet <provider/facet-name|facet-name>] [--version <semver>] [--profile <name>]",
     "  policy revoke (([--provider <provider>] --facet <provider/facet-name|facet-name>) [--version <semver>] | --all) [--profile <name>]",
     "  policy prune [--provider <provider>] [--facet <provider/facet-name|facet-name>] [--version <semver>] [--all] [--profile <name>]",

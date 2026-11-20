@@ -102,14 +102,14 @@ export async function readFujiWalletStatus(
     throw new FujiWalletError(
       "FUJI_RPC_ERROR",
       redactSecrets(
-        `Failed to query Fuji RPC chain ID: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to query Avalanche RPC chain ID: ${error instanceof Error ? error.message : String(error)}`,
       ),
     );
   }
   if (chainId !== FUJI_CHAIN_ID) {
     throw new FujiWalletError(
       "WRONG_CHAIN_ID",
-      `Expected Avalanche Fuji chain ID ${FUJI_CHAIN_ID}, got ${chainId}.`,
+      `Expected Avalanche chain ID ${FUJI_CHAIN_ID}, got ${chainId}.`,
     );
   }
 
@@ -120,7 +120,7 @@ export async function readFujiWalletStatus(
     throw new FujiWalletError(
       "FUJI_RPC_ERROR",
       redactSecrets(
-        `Failed to read fUSD balance on Fuji: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to read fUSD balance on Avalanche: ${error instanceof Error ? error.message : String(error)}`,
       ),
     );
   }
@@ -135,6 +135,6 @@ export async function readFujiWalletStatus(
     balanceAtomic: balance.toString(),
     balanceFormatted: formatFusdAtomic(balance),
     fundingNote:
-      "FacetUSD on Fuji is owner-minted; top up via explicit operator transfer to this address.",
+      "Fund this Avalanche wallet with testnet fUSD via /faucet on FACET or an explicit transfer.",
   };
 }

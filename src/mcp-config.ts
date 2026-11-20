@@ -10,7 +10,7 @@ export const MCP_CLIENT_NAMES: readonly McpClientName[] = [
 ];
 
 export const PINNED_MCP_PACKAGE_NAME = "@facet-aex/mcp-server" as const;
-export const PINNED_MCP_PACKAGE_VERSION = "0.2.0" as const;
+export const PINNED_MCP_PACKAGE_VERSION = "0.3.0" as const;
 
 export interface FacetMcpServerSpec {
   name: "facet";

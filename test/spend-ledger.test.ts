@@ -10,6 +10,7 @@ import {
   SNOWTRACE_TX_BASE,
   SpendLedger,
   formatSpendHistory,
+  formatSpendHistoryText,
 } from "../src/spend-ledger.js";
 
 const tempDirs: string[] = [];
@@ -274,5 +275,123 @@ describe("SpendLedger & Task B6 spend history", () => {
     expect(
       results.filter((r) => r === "DENIED:DAILY_CAP_EXCEEDED"),
     ).toHaveLength(1);
+  });
+
+  it("records PAY_PER_RESULT escrow deposit, partial/zero-item refunds, release refund metadata, and Avalanche spend history text", async () => {
+    const dir = await makeTempDir();
+    const ledger = new SpendLedger({ filePath: join(dir, "ledger.json") });
+    const now = new Date("2026-11-20T08:00:00Z");
+
+    const baseOpts = {
+      dailyCapAtomic: "5000",
+      provider: "studio-c4fc0882e",
+      facetName: "vn-tech-news-actor",
+      facetDisplayName: "VN Tech & Macro News Extractor",
+      version: "1.0.0",
+      facetType: "ACTOR" as const,
+      pricingModel: "PAY_PER_RESULT" as const,
+      depositedAmountAtomic: "5000",
+      now,
+    };
+
+    // Run 1: itemCount = 3 -> 1500 settled, 3500 refunded
+    const r1 = await ledger.reserve("run-escrow-3", "5000", baseOpts);
+    expect(r1.pricingModel).toBe("PAY_PER_RESULT");
+    expect(r1.depositedAmountAtomic).toBe("5000");
+
+    const depositTx1 = "0x" + "1".repeat(64);
+    const paymentTx1 = "0x" + "2".repeat(64);
+    const receiptTx1 = "0x" + "3".repeat(64);
+
+    const c1 = await ledger.confirm("run-escrow-3", {
+      paymentTxHash: paymentTx1,
+      receiptTxHash: receiptTx1,
+      depositTxHash: depositTx1,
+      pricingModel: "PAY_PER_RESULT",
+      depositedAmountAtomic: "5000",
+      amountAtomic: "1500",
+      refundAmountAtomic: "3500",
+      itemCount: 3,
+      runId: "11111111-1111-4111-8111-111111111111",
+      now,
+    });
+    expect(c1.pricingModel).toBe("PAY_PER_RESULT");
+    expect(c1.depositedAmountAtomic).toBe("5000");
+    expect(c1.amountAtomic).toBe("1500");
+    expect(c1.refundAmountAtomic).toBe("3500");
+    expect(c1.itemCount).toBe(3);
+
+    // Replaying settled PAY_PER_RESULT with original deposit amount succeeds idempotently
+    const replay1 = await ledger.reserve("run-escrow-3", "5000", baseOpts);
+    expect(replay1.status).toBe("SETTLED");
+    expect(replay1.amountAtomic).toBe("1500");
+
+    // Reusing same runKey with a different pricingModel conflicts
+    await expect(
+      ledger.reserve("run-escrow-3", "1000", {
+        ...baseOpts,
+        pricingModel: "PAY_PER_RUN",
+      }),
+    ).rejects.toMatchObject({ code: "RESERVATION_CONFLICT" });
+
+    // Run 2: reserve remaining 3500 cap, settle with itemCount = 0 -> amountAtomic = "0", full 3500 refund
+    const r2 = await ledger.reserve("run-escrow-0", "3500", {
+      ...baseOpts,
+      depositedAmountAtomic: "3500",
+    });
+    expect(r2.status).toBe("PENDING");
+
+    const c2 = await ledger.confirm("run-escrow-0", {
+      paymentTxHash: "0x" + "4".repeat(64),
+      receiptTxHash: "0x" + "5".repeat(64),
+      pricingModel: "PAY_PER_RESULT",
+      depositedAmountAtomic: "3500",
+      amountAtomic: "0",
+      refundAmountAtomic: "3500",
+      itemCount: 0,
+      now,
+    });
+    expect(c2.amountAtomic).toBe("0");
+    expect(c2.refundAmountAtomic).toBe("3500");
+    expect(c2.itemCount).toBe(0);
+
+    // Run 3: 3500 available again after 0-item settlement; release on 502 ESCROW_REFUNDED frees cap
+    const r3 = await ledger.reserve("run-escrow-refunded", "3500", {
+      ...baseOpts,
+      depositedAmountAtomic: "3500",
+    });
+    expect(r3.status).toBe("PENDING");
+    const rel3 = await ledger.release("run-escrow-refunded", "ESCROW_REFUNDED", {
+      refundTxHash: "0x" + "6".repeat(64),
+      refundAmountAtomic: "3500",
+      now,
+    });
+    expect(rel3.status).toBe("RELEASED");
+    expect(rel3.refundAmountAtomic).toBe("3500");
+
+    const entries = await ledger.list();
+    const report = formatSpendHistory(entries);
+    expect(report.summary.totalSettledAtomic).toBe("1500");
+
+    const threeItemInvoice = report.invoices.find((i) => i.runKey === "run-escrow-3")!;
+    expect(threeItemInvoice.pricingModel).toBe("PAY_PER_RESULT");
+    expect(threeItemInvoice.depositedAmountAtomic).toBe("5000");
+    expect(threeItemInvoice.refundAmountAtomic).toBe("3500");
+    expect(threeItemInvoice.itemCount).toBe(3);
+    expect(threeItemInvoice.depositSnowtraceUrl).toBe(`${SNOWTRACE_TX_BASE}${depositTx1}`);
+
+    const zeroItemInvoice = report.invoices.find((i) => i.runKey === "run-escrow-0")!;
+    expect(zeroItemInvoice.amountAtomic).toBe("0");
+    expect(zeroItemInvoice.refundAmountAtomic).toBe("3500");
+    expect(zeroItemInvoice.itemCount).toBe(0);
+
+    const text = formatSpendHistoryText("staging", report);
+    expect(text).toContain("PAY_PER_RESULT");
+    expect(text).toContain("0.005000 fUSD (5000 atomic)");
+    expect(text).toContain("0.003500 fUSD (3500 atomic)");
+    expect(text).toContain("items: 3");
+    expect(text).toContain("items: 0");
+    expect(text).toContain(`${SNOWTRACE_TX_BASE}${depositTx1}`);
+    expect(text).not.toMatch(/\bfuji\b/iu);
   });
 });
