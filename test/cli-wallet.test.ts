@@ -201,13 +201,23 @@ describe("facet wallet CLI & packaging", () => {
     expect(pkg.files).toEqual(["dist", "README.md"]);
     expect(pkg.engines.node).toBe(">=22.0.0");
 
-    const packJson = JSON.parse(
+    type PackSummary = { files?: Array<{ path: string }> };
+    const rawPackJson = JSON.parse(
       execFileSync("npm", ["pack", "--dry-run", "--json"], {
         cwd: pkgDir,
         encoding: "utf8",
       }),
-    ) as Array<{ files: Array<{ path: string }> }>;
-    const paths = packJson[0]!.files.map((entry) => entry.path);
+    ) as unknown;
+    const packEntry: PackSummary | undefined = Array.isArray(rawPackJson)
+      ? (rawPackJson[0] as PackSummary | undefined)
+      : rawPackJson &&
+          typeof rawPackJson === "object" &&
+          Array.isArray((rawPackJson as PackSummary).files)
+        ? (rawPackJson as PackSummary)
+        : rawPackJson && typeof rawPackJson === "object"
+          ? Object.values(rawPackJson as Record<string, PackSummary>)[0]
+          : undefined;
+    const paths = (packEntry?.files ?? []).map((entry) => entry.path);
     expect(paths).toContain("dist/cli.js");
     expect(paths).toContain("dist/cli-format.js");
     expect(paths).toContain("dist/index.js");
