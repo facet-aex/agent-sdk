@@ -1,13 +1,13 @@
 # `@facet-aex/cli`
 
-Buyer CLI and TypeScript library for Avalanche Fuji local wallet custody, default-deny spending policies, local spend history invoices, and MCP client configuration.
+Buyer CLI and TypeScript library for Avalanche local wallet custody, default-deny spending policies, local spend history invoices, and MCP client configuration.
 
 All CLI commands emit human-readable output by default. Pass `--json` to any command when structured JSON is needed for scripting.
 
 ## Quickstart
 
 ```bash
-# 1) Create a protected Fuji wallet (stored in OS credential store, never plaintext)
+# 1) Create a protected Avalanche wallet (stored in OS credential store, never plaintext)
 facet wallet create
 facet wallet status
 

@@ -403,7 +403,7 @@ describe("facet wallet CLI & packaging", () => {
         spec: {
           name: "facet",
           command: "npx",
-          args: ["-y", "@facet-aex/mcp-server@0.2.0"],
+          args: ["-y", "@facet-aex/mcp-server@0.3.0"],
           env: {
             FACET_CONTROL_API_URL: "https://staging.facet.briandev.space",
             FACET_GATEWAY_URL: "https://staging.facet.briandev.space",
