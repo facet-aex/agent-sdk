@@ -22,8 +22,16 @@ import { resolveProfileName } from "./wallet-store.js";
 const ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/u;
 const TX_HASH_REGEX = /^0x[a-fA-F0-9]{64}$/u;
 
+export const PRICING_MODELS = ["PAY_PER_RUN", "PAY_PER_RESULT"] as const;
+export type PricingModel = (typeof PRICING_MODELS)[number];
+
+export const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+export type HttpMethod = (typeof HTTP_METHODS)[number];
+
 export const DEFAULT_POLICY_MAX_PER_RUN_ATOMIC = "1000" as const;
 export const DEFAULT_POLICY_DAILY_CAP_ATOMIC = "10000" as const;
+export const DEFAULT_PAY_PER_RESULT_MAX_ITEMS_CAP = 20 as const;
+export const MAX_PAY_PER_RESULT_ITEMS_CAP = 1000 as const;
 
 export function addOneMonthUtc(from: Date = new Date()): Date {
   const year = from.getUTCFullYear();
@@ -78,27 +86,62 @@ export class SpendPolicyError extends Error {
   }
 }
 
+export interface ApiMeta {
+  method: HttpMethod;
+  pathTemplate: string;
+  datasetPath?: string;
+  staticHeaderNames?: string[];
+  registryTxHash?: string;
+  registryVerified?: boolean;
+}
+
+export interface FacetPricingOption {
+  model: PricingModel;
+  priceAtomic: string;
+  maxItemsCap?: number;
+  maxAmountAtomic: string;
+  assetAddress: string;
+  chainId: number;
+  payTo: string;
+  isPrimary: boolean;
+}
+
+export interface PinnedPricingOption {
+  model: PricingModel;
+  priceAtomic: string;
+  maxItemsCap?: number;
+  maxAmountAtomic: string;
+}
+
 export interface PublicFacetRecord {
   provider: string;
   facetName: string;
   facetDisplayName: string;
   version: string;
   facetType: FacetType;
+  summary?: string;
   description?: string;
   category?: string;
   tags?: string[];
+  method?: string;
   inputSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
   pricing?: {
-    model: "PAY_PER_RUN" | "PAY_PER_RESULT";
+    model: PricingModel;
     priceAtomic: string;
+    maxItemsCap?: number;
+    maxAmountAtomic?: string;
     assetAddress: string;
     chainId: number;
     payTo: string;
+    isPrimary?: boolean;
   };
+  pricingOptions?: FacetPricingOption[];
+  apiMeta?: ApiMeta;
   actorMeta?: {
     runtime: string;
     imageDigest: string;
+    runnerOciDigest?: string;
     registryTxHash?: string;
     registryVerified?: boolean;
   };
@@ -110,6 +153,7 @@ export interface PublicFacetRecord {
     registryTxHash?: string;
     registryVerified?: boolean;
   };
+  publishedAt?: string;
 }
 
 export interface SpendPolicyGrant {
@@ -123,8 +167,9 @@ export interface SpendPolicyGrant {
   assetAddress: string;
   settlementContract: string;
   providerPayTo: string;
-  pricingModel: "PAY_PER_RUN" | "PAY_PER_RESULT";
+  pricingModel: PricingModel;
   pinnedPriceAtomic: string;
+  pricingOptions?: PinnedPricingOption[];
   maxPerRunAtomic: string;
   dailyCapAtomic: string;
   dayBoundary: "UTC";
@@ -145,6 +190,7 @@ export interface GrantPolicyInput {
   provider?: string;
   facetName?: string;
   version?: string;
+  pricingModel?: PricingModel;
   maxPerRunAtomic?: string;
   dailyCapAtomic?: string;
   expiresAt?: string;
@@ -160,7 +206,83 @@ export interface AuthorizeChallengeInput {
   settlementPayTo: string;
   providerPayTo?: string;
   amountAtomic: string;
+  pricingModel?: PricingModel;
+  unitPriceAtomic?: string;
+  maxItemsCap?: number;
   now?: Date;
+}
+
+export function isValidPricingModel(value: string): value is PricingModel {
+  return (PRICING_MODELS as readonly string[]).includes(value);
+}
+
+/**
+ * Returns the pinned pricing options for a grant, synthesizing a single-entry
+ * list for legacy v2 grants written before `pricingOptions` was introduced.
+ */
+export function getGrantPricingOptions(
+  grant: SpendPolicyGrant,
+): PinnedPricingOption[] {
+  if (Array.isArray(grant.pricingOptions) && grant.pricingOptions.length > 0) {
+    return grant.pricingOptions.map((option) => ({
+      model: option.model,
+      priceAtomic: option.priceAtomic,
+      ...(option.maxItemsCap !== undefined
+        ? { maxItemsCap: option.maxItemsCap }
+        : {}),
+      maxAmountAtomic: option.maxAmountAtomic,
+    }));
+  }
+
+  if (grant.pricingModel === "PAY_PER_RESULT") {
+    const cap = DEFAULT_PAY_PER_RESULT_MAX_ITEMS_CAP;
+    const maxAmount = (BigInt(grant.pinnedPriceAtomic) * BigInt(cap)).toString();
+    return [
+      {
+        model: "PAY_PER_RESULT",
+        priceAtomic: grant.pinnedPriceAtomic,
+        maxItemsCap: cap,
+        maxAmountAtomic: maxAmount,
+      },
+    ];
+  }
+
+  return [
+    {
+      model: "PAY_PER_RUN",
+      priceAtomic: grant.pinnedPriceAtomic,
+      maxAmountAtomic: grant.pinnedPriceAtomic,
+    },
+  ];
+}
+
+/**
+ * Emits non-fatal warnings when a granted `maxPerRunAtomic` limit is lower than
+ * any pinned option's `maxAmountAtomic` (e.g., default 1000 vs PAY_PER_RESULT cap).
+ */
+export function getPolicyGrantWarnings(grant: SpendPolicyGrant): string[] {
+  let maxPerRun: bigint;
+  try {
+    maxPerRun = parsePositiveAtomic(grant.maxPerRunAtomic, "maxPerRunAtomic");
+  } catch {
+    return [];
+  }
+
+  const warnings: string[] = [];
+  for (const option of getGrantPricingOptions(grant)) {
+    let maxAmount: bigint;
+    try {
+      maxAmount = parsePositiveAtomic(option.maxAmountAtomic, "maxAmountAtomic");
+    } catch {
+      continue;
+    }
+    if (maxPerRun < maxAmount) {
+      warnings.push(
+        `Warning: maxPerRunAtomic (${grant.maxPerRunAtomic}) is below ${option.model} maxAmountAtomic (${option.maxAmountAtomic}); invocations will fail POLICY_MAX_PER_RUN_EXCEEDED unless granted with --max-per-run >= ${option.maxAmountAtomic}.`,
+      );
+    }
+  }
+  return warnings;
 }
 
 export function defaultPolicyStorePath(
@@ -184,36 +306,218 @@ function assertVerifiedRegistry(facet: PublicFacetRecord): string {
       `Unsupported facetType '${String(facet.facetType)}'. Expected API, ACTOR, or AGENT.`,
     );
   }
-  if (facet.facetType === "ACTOR") {
-    if (
-      facet.actorMeta?.registryVerified !== true ||
-      !facet.actorMeta.registryTxHash ||
-      !TX_HASH_REGEX.test(facet.actorMeta.registryTxHash)
-    ) {
+  const registryByType: Record<
+    FacetType,
+    { label: string; meta: { registryVerified?: boolean; registryTxHash?: string } | undefined }
+  > = {
+    ACTOR: { label: "Actor", meta: facet.actorMeta },
+    AGENT: { label: "Agent", meta: facet.agentMeta },
+    API: { label: "API", meta: facet.apiMeta },
+  };
+  const entry = registryByType[facet.facetType];
+  if (
+    entry.meta?.registryVerified !== true ||
+    !entry.meta.registryTxHash ||
+    !TX_HASH_REGEX.test(entry.meta.registryTxHash)
+  ) {
+    throw new SpendPolicyError(
+      "UNVERIFIED_FACET_REGISTRY",
+      `Refusing policy grant: ${entry.label} does not have a verified Avalanche registry record.`,
+    );
+  }
+  return entry.meta.registryTxHash;
+}
+
+function assertExpectedMaxAmount(
+  rawMaxAmount: string | undefined,
+  expected: bigint,
+  model: PricingModel,
+): void {
+  if (rawMaxAmount === undefined) return;
+  let parsedMax: bigint;
+  try {
+    parsedMax = parsePositiveAtomic(rawMaxAmount, "maxAmountAtomic");
+  } catch (error) {
+    throw new SpendPolicyError(
+      "POLICY_INVALID",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  if (parsedMax !== expected) {
+    throw new SpendPolicyError(
+      "POLICY_INVALID",
+      model === "PAY_PER_RUN"
+        ? `PAY_PER_RUN maxAmountAtomic (${rawMaxAmount}) must equal priceAtomic (${expected.toString()}).`
+        : `PAY_PER_RESULT maxAmountAtomic (${rawMaxAmount}) must equal priceAtomic * maxItemsCap (${expected.toString()}).`,
+    );
+  }
+}
+
+type RawCatalogPricingOption = NonNullable<PublicFacetRecord["pricing"]>;
+
+function normalizeCatalogPricingOptions(facet: PublicFacetRecord): {
+  payTo: string;
+  primaryModel: PricingModel;
+  options: PinnedPricingOption[];
+} {
+  const rawList: RawCatalogPricingOption[] =
+    Array.isArray(facet.pricingOptions) && facet.pricingOptions.length > 0
+      ? facet.pricingOptions
+      : facet.pricing
+        ? [facet.pricing]
+        : [];
+
+  if (rawList.length === 0) {
+    throw new SpendPolicyError(
+      "POLICY_INVALID",
+      "Catalog Facet is missing pricing metadata.",
+    );
+  }
+
+  const seenModels = new Set<PricingModel>();
+  const normalized: Array<{ pinned: PinnedPricingOption; isPrimary: boolean }> =
+    [];
+  let sharedPayTo: string | undefined;
+  let explicitPrimaryCount = 0;
+  let explicitPrimaryModel: PricingModel | undefined;
+
+  for (const rawOpt of rawList) {
+    if (!isValidPricingModel(rawOpt.model)) {
       throw new SpendPolicyError(
-        "UNVERIFIED_FACET_REGISTRY",
-        "Refusing policy grant: Actor does not have a verified Fuji registry record.",
+        "POLICY_INVALID",
+        `Unsupported pricingModel '${String(rawOpt.model)}'.`,
       );
     }
-    return facet.actorMeta.registryTxHash;
-  }
-  if (facet.facetType === "AGENT") {
-    if (
-      facet.agentMeta?.registryVerified !== true ||
-      !facet.agentMeta.registryTxHash ||
-      !TX_HASH_REGEX.test(facet.agentMeta.registryTxHash)
-    ) {
+    if (seenModels.has(rawOpt.model)) {
       throw new SpendPolicyError(
-        "UNVERIFIED_FACET_REGISTRY",
-        "Refusing policy grant: Agent does not have a verified Fuji registry record.",
+        "POLICY_INVALID",
+        `Catalog Facet contains duplicate pricing option '${rawOpt.model}'.`,
       );
     }
-    return facet.agentMeta.registryTxHash;
+    seenModels.add(rawOpt.model);
+
+    if (rawOpt.chainId !== FUJI_CHAIN_ID) {
+      throw new SpendPolicyError(
+        "POLICY_CHAIN_MISMATCH",
+        `Expected Avalanche chainId ${FUJI_CHAIN_ID}, got ${rawOpt.chainId}.`,
+      );
+    }
+    if (
+      rawOpt.assetAddress.toLowerCase() !== FUSD_ASSET_ADDRESS.toLowerCase()
+    ) {
+      throw new SpendPolicyError(
+        "POLICY_ASSET_MISMATCH",
+        `Expected Avalanche fUSD ${FUSD_ASSET_ADDRESS}, got ${rawOpt.assetAddress}.`,
+      );
+    }
+    if (!ADDRESS_REGEX.test(rawOpt.payTo)) {
+      throw new SpendPolicyError(
+        "POLICY_INVALID",
+        "Facet pricing.payTo is not a valid EVM address.",
+      );
+    }
+    if (sharedPayTo === undefined) {
+      sharedPayTo = rawOpt.payTo;
+    } else if (sharedPayTo.toLowerCase() !== rawOpt.payTo.toLowerCase()) {
+      throw new SpendPolicyError(
+        "POLICY_INVALID",
+        "Catalog Facet pricing options disagree on payTo recipient.",
+      );
+    }
+
+    let unitPrice: bigint;
+    try {
+      unitPrice = parsePositiveAtomic(rawOpt.priceAtomic, "priceAtomic");
+    } catch (error) {
+      throw new SpendPolicyError(
+        "POLICY_INVALID",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
+    let pinned: PinnedPricingOption;
+    if (rawOpt.model === "PAY_PER_RUN") {
+      if (rawOpt.maxItemsCap !== undefined) {
+        throw new SpendPolicyError(
+          "POLICY_INVALID",
+          "PAY_PER_RUN pricing option must not specify maxItemsCap.",
+        );
+      }
+      assertExpectedMaxAmount(rawOpt.maxAmountAtomic, unitPrice, "PAY_PER_RUN");
+      pinned = {
+        model: "PAY_PER_RUN",
+        priceAtomic: unitPrice.toString(),
+        maxAmountAtomic: unitPrice.toString(),
+      };
+    } else {
+      const cap =
+        rawOpt.maxItemsCap === undefined
+          ? DEFAULT_PAY_PER_RESULT_MAX_ITEMS_CAP
+          : rawOpt.maxItemsCap;
+      if (
+        typeof cap !== "number" ||
+        !Number.isSafeInteger(cap) ||
+        cap < 1 ||
+        cap > MAX_PAY_PER_RESULT_ITEMS_CAP
+      ) {
+        throw new SpendPolicyError(
+          "POLICY_INVALID",
+          `PAY_PER_RESULT maxItemsCap must be an integer between 1 and ${MAX_PAY_PER_RESULT_ITEMS_CAP}.`,
+        );
+      }
+      const maxAmount = unitPrice * BigInt(cap);
+      assertExpectedMaxAmount(
+        rawOpt.maxAmountAtomic,
+        maxAmount,
+        "PAY_PER_RESULT",
+      );
+      pinned = {
+        model: "PAY_PER_RESULT",
+        priceAtomic: unitPrice.toString(),
+        maxItemsCap: cap,
+        maxAmountAtomic: maxAmount.toString(),
+      };
+    }
+
+    const isPrimary = rawOpt.isPrimary === true;
+    if (isPrimary) {
+      explicitPrimaryCount += 1;
+      explicitPrimaryModel = pinned.model;
+    }
+    normalized.push({ pinned, isPrimary });
   }
-  throw new SpendPolicyError(
-    "UNVERIFIED_FACET_REGISTRY",
-    `Refusing policy grant: Facet type ${facet.facetType} lacks a verified on-chain registry record.`,
-  );
+
+  if (
+    facet.pricing &&
+    sharedPayTo &&
+    facet.pricing.payTo.toLowerCase() !== sharedPayTo.toLowerCase()
+  ) {
+    throw new SpendPolicyError(
+      "POLICY_INVALID",
+      "Catalog Facet pricing.payTo disagrees with pricingOptions.",
+    );
+  }
+  if (explicitPrimaryCount > 1) {
+    throw new SpendPolicyError(
+      "POLICY_INVALID",
+      "Catalog Facet marks more than one pricing option as primary.",
+    );
+  }
+
+  const primaryModel =
+    explicitPrimaryModel ??
+    (facet.pricing && seenModels.has(facet.pricing.model)
+      ? facet.pricing.model
+      : undefined) ??
+    (seenModels.has("PAY_PER_RUN")
+      ? "PAY_PER_RUN"
+      : normalized[0]!.pinned.model);
+
+  return {
+    payTo: sharedPayTo!,
+    primaryModel,
+    options: normalized.map((item) => item.pinned),
+  };
 }
 
 export class PolicyStore {
@@ -317,33 +621,38 @@ export class PolicyStore {
       }
     }
 
-    const registryTxHash = assertVerifiedRegistry(facet);
-    const pricing = facet.pricing;
-    if (!pricing) {
-      throw new SpendPolicyError(
-        "POLICY_INVALID",
-        "Catalog Facet is missing pricing metadata.",
-      );
-    }
-    if (pricing.chainId !== FUJI_CHAIN_ID) {
-      throw new SpendPolicyError(
-        "POLICY_CHAIN_MISMATCH",
-        `Expected Fuji chainId ${FUJI_CHAIN_ID}, got ${pricing.chainId}.`,
-      );
-    }
     if (
-      pricing.assetAddress.toLowerCase() !== FUSD_ASSET_ADDRESS.toLowerCase()
+      input.pricingModel !== undefined &&
+      !isValidPricingModel(input.pricingModel)
     ) {
       throw new SpendPolicyError(
-        "POLICY_ASSET_MISMATCH",
-        `Expected Fuji fUSD ${FUSD_ASSET_ADDRESS}, got ${pricing.assetAddress}.`,
+        "POLICY_INVALID",
+        `Invalid pricingModel '${String(input.pricingModel)}'. Expected PAY_PER_RUN or PAY_PER_RESULT.`,
       );
     }
-    if (!ADDRESS_REGEX.test(pricing.payTo)) {
-      throw new SpendPolicyError(
-        "POLICY_INVALID",
-        "Facet pricing.payTo is not a valid EVM address.",
+
+    const registryTxHash = assertVerifiedRegistry(facet);
+    const catalogPricing = normalizeCatalogPricingOptions(facet);
+    let pinnedOptions: PinnedPricingOption[];
+    let primaryOption: PinnedPricingOption;
+    if (input.pricingModel !== undefined) {
+      const selected = catalogPricing.options.find(
+        (opt) => opt.model === input.pricingModel,
       );
+      if (!selected) {
+        throw new SpendPolicyError(
+          "POLICY_INVALID",
+          `Facet ${facet.provider}/${facet.facetName}@${facet.version} does not offer pricingModel '${input.pricingModel}'.`,
+        );
+      }
+      pinnedOptions = [selected];
+      primaryOption = selected;
+    } else {
+      pinnedOptions = catalogPricing.options;
+      primaryOption =
+        pinnedOptions.find(
+          (opt) => opt.model === catalogPricing.primaryModel,
+        ) ?? pinnedOptions[0]!;
     }
 
     const rawMaxPerRun =
@@ -352,11 +661,9 @@ export class PolicyStore {
       input.dailyCapAtomic ?? DEFAULT_POLICY_DAILY_CAP_ATOMIC;
     const rawExpiresAt = input.expiresAt ?? addOneMonthUtc(now).toISOString();
 
-    let pinnedPrice: bigint;
     let maxPerRun: bigint;
     let dailyCap: bigint;
     try {
-      pinnedPrice = parsePositiveAtomic(pricing.priceAtomic, "priceAtomic");
       maxPerRun = parsePositiveAtomic(rawMaxPerRun, "maxPerRunAtomic");
       dailyCap = parsePositiveAtomic(rawDailyCap, "dailyCapAtomic");
     } catch (error) {
@@ -392,9 +699,10 @@ export class PolicyStore {
       assetAddress: FUSD_ASSET_ADDRESS,
       // Always pin the verified FeeSplit contract shipped with the package, never from agent input.
       settlementContract: FACET_FEE_SPLIT_ADDRESS,
-      providerPayTo: pricing.payTo,
-      pricingModel: pricing.model,
-      pinnedPriceAtomic: pinnedPrice.toString(),
+      providerPayTo: catalogPricing.payTo,
+      pricingModel: primaryOption.model,
+      pinnedPriceAtomic: primaryOption.priceAtomic,
+      pricingOptions: pinnedOptions,
       maxPerRunAtomic: maxPerRun.toString(),
       dailyCapAtomic: dailyCap.toString(),
       dayBoundary: "UTC",
@@ -607,6 +915,89 @@ export function validateGrantAgainstChallenge(
     );
   }
 
+  if (
+    challenge.pricingModel !== undefined &&
+    !isValidPricingModel(challenge.pricingModel)
+  ) {
+    throw new SpendPolicyError(
+      "POLICY_INVALID",
+      `Unsupported challenge pricingModel '${String(challenge.pricingModel)}'.`,
+    );
+  }
+
+  const pinnedOptions = getGrantPricingOptions(grant);
+  let matchedOption: PinnedPricingOption;
+  if (challenge.pricingModel !== undefined) {
+    const found = pinnedOptions.find(
+      (option) => option.model === challenge.pricingModel,
+    );
+    if (!found) {
+      throw new SpendPolicyError(
+        "POLICY_PRICE_MISMATCH",
+        `Pricing model ${challenge.pricingModel} is not authorized in this spending policy grant.`,
+      );
+    }
+    matchedOption = found;
+  } else if (pinnedOptions.length > 1) {
+    throw new SpendPolicyError(
+      "POLICY_PRICE_MISMATCH",
+      "Challenge must specify pricingModel when policy grant authorizes multiple pricing options.",
+    );
+  } else {
+    matchedOption = pinnedOptions[0]!;
+  }
+
+  if (challenge.unitPriceAtomic !== undefined) {
+    let challengeUnitPrice: bigint;
+    try {
+      challengeUnitPrice = parsePositiveAtomic(
+        challenge.unitPriceAtomic,
+        "unitPriceAtomic",
+      );
+    } catch {
+      throw new SpendPolicyError(
+        "POLICY_PRICE_MISMATCH",
+        `Challenge unitPriceAtomic '${challenge.unitPriceAtomic}' is invalid.`,
+      );
+    }
+    if (challengeUnitPrice !== BigInt(matchedOption.priceAtomic)) {
+      throw new SpendPolicyError(
+        "POLICY_PRICE_MISMATCH",
+        `Challenge unitPriceAtomic ${challengeUnitPrice.toString()} does not match pinned ${matchedOption.model} price ${matchedOption.priceAtomic}.`,
+      );
+    }
+  }
+
+  if (matchedOption.model === "PAY_PER_RUN") {
+    if (challenge.maxItemsCap !== undefined) {
+      throw new SpendPolicyError(
+        "POLICY_PRICE_MISMATCH",
+        "PAY_PER_RUN challenge must not include maxItemsCap.",
+      );
+    }
+  } else if (challenge.maxItemsCap !== undefined) {
+    if (
+      typeof challenge.maxItemsCap !== "number" ||
+      !Number.isSafeInteger(challenge.maxItemsCap) ||
+      challenge.maxItemsCap < 1 ||
+      challenge.maxItemsCap > MAX_PAY_PER_RESULT_ITEMS_CAP
+    ) {
+      throw new SpendPolicyError(
+        "POLICY_PRICE_MISMATCH",
+        `PAY_PER_RESULT challenge maxItemsCap must be an integer between 1 and ${MAX_PAY_PER_RESULT_ITEMS_CAP}.`,
+      );
+    }
+    if (
+      matchedOption.maxItemsCap !== undefined &&
+      challenge.maxItemsCap !== matchedOption.maxItemsCap
+    ) {
+      throw new SpendPolicyError(
+        "POLICY_PRICE_MISMATCH",
+        `Challenge maxItemsCap ${challenge.maxItemsCap} does not match pinned maxItemsCap ${matchedOption.maxItemsCap}.`,
+      );
+    }
+  }
+
   if (requestedAmount > BigInt(grant.maxPerRunAtomic)) {
     throw new SpendPolicyError(
       "POLICY_MAX_PER_RUN_EXCEEDED",
@@ -614,14 +1005,43 @@ export function validateGrantAgainstChallenge(
     );
   }
 
-  if (
-    grant.pricingModel === "PAY_PER_RUN" &&
-    requestedAmount !== BigInt(grant.pinnedPriceAtomic)
-  ) {
-    throw new SpendPolicyError(
-      "POLICY_PRICE_MISMATCH",
-      `Challenge amount ${requestedAmount.toString()} does not match pinned PAY_PER_RUN price ${grant.pinnedPriceAtomic}.`,
-    );
+  if (matchedOption.model === "PAY_PER_RUN") {
+    if (requestedAmount !== BigInt(matchedOption.priceAtomic)) {
+      throw new SpendPolicyError(
+        "POLICY_PRICE_MISMATCH",
+        `Challenge amount ${requestedAmount.toString()} does not match pinned PAY_PER_RUN price ${matchedOption.priceAtomic}.`,
+      );
+    }
+  } else {
+    const effectiveCap = challenge.maxItemsCap ?? matchedOption.maxItemsCap;
+    if (effectiveCap !== undefined) {
+      const expectedAmount =
+        BigInt(matchedOption.priceAtomic) * BigInt(effectiveCap);
+      if (requestedAmount !== expectedAmount) {
+        throw new SpendPolicyError(
+          "POLICY_PRICE_MISMATCH",
+          `Challenge amount ${requestedAmount.toString()} does not match pinned PAY_PER_RESULT deposit ${expectedAmount.toString()} (${matchedOption.priceAtomic} * ${effectiveCap}).`,
+        );
+      }
+    }
+    const hasPinnedOptions =
+      Array.isArray(grant.pricingOptions) && grant.pricingOptions.length > 0;
+    if (hasPinnedOptions) {
+      if (requestedAmount !== BigInt(matchedOption.maxAmountAtomic)) {
+        throw new SpendPolicyError(
+          "POLICY_PRICE_MISMATCH",
+          `Challenge amount ${requestedAmount.toString()} does not match pinned PAY_PER_RESULT maxAmountAtomic ${matchedOption.maxAmountAtomic}.`,
+        );
+      }
+    } else if (
+      challenge.maxItemsCap === undefined &&
+      requestedAmount % BigInt(matchedOption.priceAtomic) !== 0n
+    ) {
+      throw new SpendPolicyError(
+        "POLICY_PRICE_MISMATCH",
+        `Challenge amount ${requestedAmount.toString()} is not a multiple of pinned PAY_PER_RESULT unit price ${matchedOption.priceAtomic}.`,
+      );
+    }
   }
 
   return grant;

@@ -8,6 +8,7 @@ import {
   FacetClient,
   PolicyStore,
   SpendLedger,
+  SpendPolicyError,
   WalletStore,
   WalletStoreError,
   buildFacetMcpSpec,
@@ -27,10 +28,12 @@ import {
   formatWalletCreateText,
   formatWalletImportText,
   formatWalletStatusText,
+  getPolicyGrantWarnings,
   installMcpClient,
   isMcpClientName,
   isValidFacetName,
   isValidFacetType,
+  isValidPricingModel,
   isValidSemver,
   isValidUsername,
   parseFacetRef,
@@ -40,6 +43,7 @@ import {
   resolveProfileName,
   type FacetType,
   type FujiRpcClient,
+  type PricingModel,
   type SpendEntryStatus,
 } from "./index.js";
 
@@ -242,7 +246,7 @@ export async function runCli(
       if (subcommand === "import") {
         const promptSecret = deps.promptSecret ?? defaultPromptSecret;
         const rawKey = await promptSecret(
-          "Enter Fuji private key (0x..., input hidden): ",
+          "Enter Avalanche private key (0x..., input hidden): ",
         );
         const result = await walletStore.importWallet(rawKey);
         emit(result, () => formatWalletImportText(profile, result));
@@ -332,13 +336,14 @@ export async function runCli(
         const providerArg = argValue(subRest, "--provider");
         const facetArg = argValue(subRest, "--facet");
         const version = argValue(subRest, "--version");
+        const pricingModelArg = argValue(subRest, "--pricing-model");
         const maxPerRun = argValue(subRest, "--max-per-run");
         const dailyCap = argValue(subRest, "--daily-cap");
         const expires = argValue(subRest, "--expires");
 
         if (!facetArg) {
           stderr(
-            "Usage: facet policy grant (--facet <provider/facet-name> | --provider <provider> --facet <facet-name>) [--version <semver>] [--max-per-run 1000] [--daily-cap 10000] [--expires <ISO8601>] [--profile <name>] [--json]",
+            "Usage: facet policy grant (--facet <provider/facet-name> | --provider <provider> --facet <facet-name>) [--version <semver>] [--pricing-model PAY_PER_RUN|PAY_PER_RESULT] [--max-per-run 1000] [--daily-cap 10000] [--expires <ISO8601>] [--profile <name>] [--json]",
           );
           return 1;
         }
@@ -346,6 +351,16 @@ export async function runCli(
           throw new Error(
             `Invalid version '${version}'. Expected SemVer MAJOR.MINOR.PATCH.`,
           );
+        }
+        let pricingModel: PricingModel | undefined;
+        if (pricingModelArg !== undefined) {
+          if (!isValidPricingModel(pricingModelArg)) {
+            throw new SpendPolicyError(
+              "POLICY_INVALID",
+              `Invalid --pricing-model '${pricingModelArg}'. Expected PAY_PER_RUN or PAY_PER_RESULT.`,
+            );
+          }
+          pricingModel = pricingModelArg;
         }
 
         const { provider, facetName } = parseFacetRef(facetArg, providerArg);
@@ -364,11 +379,16 @@ export async function runCli(
           provider,
           facetName,
           ...(version ? { version } : {}),
+          ...(pricingModel ? { pricingModel } : {}),
           ...(maxPerRun ? { maxPerRunAtomic: maxPerRun } : {}),
           ...(dailyCap ? { dailyCapAtomic: dailyCap } : {}),
           ...(expires ? { expiresAt: expires } : {}),
         });
-        emit({ profile, policy }, () => formatPolicyGrantText(profile, policy));
+        const warnings = getPolicyGrantWarnings(policy);
+        emit(
+          { profile, policy, ...(warnings.length > 0 ? { warnings } : {}) },
+          () => formatPolicyGrantText(profile, policy),
+        );
         return 0;
       }
 
