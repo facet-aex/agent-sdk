@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FACET_FEE_SPLIT_ADDRESS,
+  FACET_LEGACY_FEE_SPLIT_V1_ADDRESS,
   FUJI_CHAIN_ID,
   FUSD_ASSET_ADDRESS,
 } from "../src/fuji-wallet.js";
@@ -666,7 +667,7 @@ describe("SpendPolicy Option B store & authorization", () => {
       chainId: FUJI_CHAIN_ID,
       network: "eip155:43113",
       assetAddress: FUSD_ASSET_ADDRESS,
-      settlementContract: FACET_FEE_SPLIT_ADDRESS,
+      settlementContract: FACET_LEGACY_FEE_SPLIT_V1_ADDRESS,
       providerPayTo: payTo,
       pricingModel: "PAY_PER_RUN",
       pinnedPriceAtomic: "1000",
@@ -684,5 +685,18 @@ describe("SpendPolicy Option B store & authorization", () => {
         maxAmountAtomic: "1000",
       },
     ]);
+
+    expect(() =>
+      validateGrantAgainstChallenge(legacyV2Grant, {
+        provider: legacyV2Grant.provider,
+        facetName: legacyV2Grant.facetName,
+        version: legacyV2Grant.version,
+        chainId: FUJI_CHAIN_ID,
+        assetAddress: FUSD_ASSET_ADDRESS,
+        settlementPayTo: "0x0000000000000000000000000000000000000099",
+        providerPayTo: payTo,
+        amountAtomic: "1000",
+      }),
+    ).toThrowError(/facet policy grant/iu);
   });
 });
