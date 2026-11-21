@@ -15,6 +15,8 @@ import {
   defaultPolicyStorePath,
   defaultSpendLedgerPath,
   formatCliHelpText,
+  formatEscrowReclaimText,
+  formatEscrowStatusText,
   formatFacetInspectText,
   formatFacetSearchText,
   formatMcpInstallText,
@@ -37,10 +39,13 @@ import {
   isValidSemver,
   isValidUsername,
   parseFacetRef,
+  readEscrowState,
   readFujiWalletStatus,
+  reclaimExpiredEscrow,
   redactSecrets,
   renderMcpConfigSnippet,
   resolveProfileName,
+  type EscrowRpcClient,
   type FacetType,
   type FujiRpcClient,
   type PricingModel,
@@ -52,6 +57,7 @@ export interface CliDependencies {
   policyStore?: PolicyStore;
   spendLedger?: SpendLedger;
   fujiClient?: FujiRpcClient;
+  escrowClient?: EscrowRpcClient;
   promptSecret?: (prompt: string) => Promise<string>;
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
@@ -507,6 +513,53 @@ export async function runCli(
         return 1;
       }
       emit({ facet }, () => formatFacetInspectText(facet));
+      return 0;
+    }
+
+    if (command === "escrow") {
+      const [subcommand, runIdArg, ...subRest] = rest;
+      const runId = runIdArg && !runIdArg.startsWith("--") ? runIdArg : argValue(rest, "--run-id");
+      const contractAddress = argValue(rest, "--contract");
+      const rpcUrl = argValue(rest, "--rpc-url");
+      if (!runId || !["status", "reclaim"].includes(subcommand ?? "")) {
+        stderr(
+          "Usage: facet escrow <status|reclaim> <run-id> [--profile <name>] [--contract <addr>] [--rpc-url <url>] [--json]",
+        );
+        return 1;
+      }
+      if (subcommand === "status") {
+        const snapshot = await readEscrowState(runId, {
+          ...(rpcUrl ? { rpcUrl } : {}),
+          ...(contractAddress ? { contractAddress } : {}),
+          ...(deps.escrowClient ? { client: deps.escrowClient } : {}),
+        });
+        emit(snapshot, () => formatEscrowStatusText(snapshot));
+        return 0;
+      }
+      const profile = resolveProfileName(argValue(subRest, "--profile"), env);
+      const walletStore = deps.walletStore ?? new WalletStore({ profile });
+      const spendLedger =
+        deps.spendLedger ??
+        new SpendLedger({ filePath: defaultSpendLedgerPath(env, profile) });
+      const account = await walletStore.loadWalletAccount();
+      const result = await reclaimExpiredEscrow(account, runId, {
+        ...(rpcUrl ? { rpcUrl } : {}),
+        ...(contractAddress ? { contractAddress } : {}),
+        ...(deps.escrowClient ? { client: deps.escrowClient } : {}),
+      });
+      const pending = await spendLedger.list({ status: "PENDING" });
+      let ledgerReleased = 0;
+      for (const entry of pending) {
+        if (entry.runId === runId) {
+          await spendLedger.release(
+            entry.runKey,
+            "ESCROW_RECLAIMED_AFTER_EXPIRY",
+          );
+          ledgerReleased++;
+        }
+      }
+      const payload = { ...result, ledgerReleased };
+      emit(payload, () => formatEscrowReclaimText(payload));
       return 0;
     }
 

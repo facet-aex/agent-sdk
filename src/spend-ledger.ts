@@ -67,6 +67,7 @@ export interface SpendLedgerEntry {
   receiptTxHash?: string;
   payer?: string;
   providerPayTo?: string;
+  escrowExpiresAt?: string;
   errorCode?: string;
   createdAt: string;
   updatedAt: string;
@@ -89,6 +90,7 @@ export interface ReserveOptions {
   pricingModel?: PricingModel;
   depositedAmountAtomic?: bigint | string;
   runId?: string;
+  escrowExpiresAt?: string;
   payer?: string;
   providerPayTo?: string;
   now?: Date;
@@ -104,6 +106,7 @@ export interface ConfirmOptions {
   refundAmountAtomic?: bigint | string;
   itemCount?: number;
   runId?: string;
+  escrowExpiresAt?: string;
   payer?: string;
   providerPayTo?: string;
   now?: Date;
@@ -472,6 +475,9 @@ export class SpendLedger {
         ...(options.facetType ? { facetType: options.facetType } : {}),
         ...(options.pricingModel ? { pricingModel: options.pricingModel } : {}),
         ...(options.runId ? { runId: options.runId } : {}),
+        ...(options.escrowExpiresAt
+          ? { escrowExpiresAt: options.escrowExpiresAt }
+          : {}),
         amountAtomic: amountStr,
         ...(depositedAmountStr
           ? { depositedAmountAtomic: depositedAmountStr }

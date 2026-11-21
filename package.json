@@ -1,6 +1,6 @@
 {
   "name": "@facet-aex/cli",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "FACET buyer CLI and TypeScript SDK for Avalanche wallet custody, spending policy, discovery, and invocation.",
   "repository": {
     "type": "git",

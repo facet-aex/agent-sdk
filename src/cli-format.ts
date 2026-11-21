@@ -1,4 +1,9 @@
-import { formatFusdAtomic, type FujiWalletStatus } from "./fuji-wallet.js";
+import {
+  formatFusdAtomic,
+  type EscrowReclaimResult,
+  type EscrowStateSnapshot,
+  type FujiWalletStatus,
+} from "./fuji-wallet.js";
 import type { InstallMcpResult } from "./mcp-install.js";
 import { parseNonNegativeAtomic, snowtraceTxUrl } from "./spend-ledger.js";
 import {
@@ -383,6 +388,37 @@ export function formatPublishActorText(facet: unknown): string {
   return lines.join("\n");
 }
 
+export function formatEscrowStatusText(snapshot: EscrowStateSnapshot): string {
+  const lines = [
+    `FACET Avalanche Escrow (${snapshot.state})`,
+    `  Run ID   : ${snapshot.runId}`,
+    `  Contract : ${snapshot.contractAddress}`,
+    `  Payer    : ${snapshot.payer}`,
+    `  Provider : ${snapshot.creatorPayTo}`,
+    `  Locked   : ${formatFusdAtomic(BigInt(snapshot.maxAmountAtomic))} fUSD (${snapshot.maxAmountAtomic} atomic)`,
+  ];
+  if (snapshot.expiresAtIso) {
+    lines.push(
+      `  Expires  : ${snapshot.expiresAtIso} (${snapshot.expired ? "EXPIRED - ready to reclaim" : "active"})`,
+    );
+  }
+  return lines.join("\n");
+}
+
+export function formatEscrowReclaimText(
+  result: EscrowReclaimResult & { ledgerReleased: number },
+): string {
+  return [
+    "Reclaimed Expired Avalanche Escrow",
+    `  Run ID   : ${result.runId}`,
+    `  Contract : ${result.contractAddress}`,
+    `  Returned : ${formatFusdAtomic(BigInt(result.refundAmountAtomic))} fUSD -> ${result.payer}`,
+    `  Tx Hash  : ${result.txHash}`,
+    `  Explorer : https://testnet.snowtrace.io/tx/${result.txHash}`,
+    `  Ledger   : ${result.ledgerReleased} pending reservation(s) released`,
+  ].join("\n");
+}
+
 export function formatCliHelpText(): string {
   return [
     "FACET CLI (@facet-aex/cli)",
@@ -401,6 +437,8 @@ export function formatCliHelpText(): string {
     "  policy revoke (([--provider <provider>] --facet <provider/facet-name|facet-name>) [--version <semver>] | --all) [--profile <name>]",
     "  policy prune [--provider <provider>] [--facet <provider/facet-name|facet-name>] [--version <semver>] [--all] [--profile <name>]",
     "  spend history [--profile <name>] [--status PENDING|SETTLED|RELEASED|FAILED] [--day YYYY-MM-DD] [--provider <provider>] [--facet <facet-name>] [--version <semver>]",
+    "  escrow status <run-id> [--contract <addr>] [--rpc-url <url>]",
+    "  escrow reclaim <run-id> [--profile <name>] [--contract <addr>] [--rpc-url <url>]",
     "  mcp config <codex|claude|antigravity> [--profile <name>] [--origin <url>] [--mcp-version <semver>]",
     "  mcp install <codex|claude|antigravity> [--profile <name>] [--origin <url>] [--mcp-version <semver>]",
     "  publish-actor --file <actor-manifest.json> [--origin <url>]",

@@ -19,6 +19,7 @@ export {
   DEFAULT_FACET_ORIGIN,
   FACET_ACTOR_REGISTRY_ADDRESS,
   FACET_FEE_SPLIT_ADDRESS,
+  FACET_LEGACY_FEE_SPLIT_V1_ADDRESS,
   FACET_RECEIPT_LOG_ADDRESS,
   FUJI_CHAIN_ID,
   FUJI_NETWORK,
@@ -27,12 +28,20 @@ export {
   FUSD_DECIMALS,
   FUSD_SYMBOL,
   FujiWalletError,
+  createViemEscrowClient,
   createViemFujiClient,
   formatFusdAtomic,
+  readEscrowState,
   readFujiWalletStatus,
+  reclaimExpiredEscrow,
+  resolveFeeSplitContractAddress,
+  type EscrowReclaimResult,
+  type EscrowRpcClient,
+  type EscrowStateSnapshot,
   type FujiRpcClient,
   type FujiWalletErrorCode,
   type FujiWalletStatus,
+  type OnChainEscrowStateName,
 } from "./fuji-wallet.js";
 export {
   FACET_NAME_MAX,
@@ -73,6 +82,8 @@ export {
 } from "./spend-ledger.js";
 export {
   formatCliHelpText,
+  formatEscrowReclaimText,
+  formatEscrowStatusText,
   formatFacetInspectText,
   formatFacetSearchText,
   formatMcpInstallText,

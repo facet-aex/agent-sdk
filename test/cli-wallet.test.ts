@@ -27,7 +27,7 @@ import {
   readFujiWalletStatus,
   type FujiRpcClient,
 } from "../src/fuji-wallet.js";
-import { formatSpendHistory, formatSpendHistoryText } from "../src/spend-ledger.js";
+import { SpendLedger, formatSpendHistory, formatSpendHistoryText } from "../src/spend-ledger.js";
 import type { PublicFacetRecord, SpendPolicyGrant } from "../src/spend-policy.js";
 import { WalletStore, type CredentialBackend } from "../src/wallet-store.js";
 
@@ -544,5 +544,93 @@ describe("facet wallet CLI & packaging", () => {
         maxAmountAtomic: "5000",
       },
     ]);
+  });
+
+  it("supports facet escrow status and permissionless facet escrow reclaim with ledger release and Avalanche copy", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "facet-escrow-cli-"));
+    tempDirs.push(dir);
+    const runId = "019a1234-5678-7abc-8def-123456789abc";
+    const payer = "0xA8fd48580a3f16B86cfC9c4efbd9fa68bC0F4E3B" as const;
+    const creator = "0x000000000000000000000000000000000000c0DE" as const;
+    const testKey = ("0x" + "3".repeat(64)) as `0x${string}`;
+    const walletStore = new WalletStore({ backend: createMemoryBackend() });
+    await walletStore.importWallet(testKey);
+
+    const ledgerPath = join(dir, "ledger.json");
+    const spendLedger = new SpendLedger({ filePath: ledgerPath });
+    await spendLedger.reserve(`tai-hung-dev/vn-tech-news-actor@1.0.0:k-1`, "5000", {
+      runId,
+      escrowExpiresAt: "2020-01-01T00:00:00.000Z",
+      provider: "tai-hung-dev",
+      facetName: "vn-tech-news-actor",
+      version: "1.0.0",
+      pricingModel: "PAY_PER_RESULT",
+    });
+
+    const reclaimCalls: string[] = [];
+    const escrowClient = {
+      readEscrowState: async (targetRunId: string) => ({
+        runId: targetRunId,
+        runKey: `0x${"1".repeat(64)}` as const,
+        contractAddress: FACET_FEE_SPLIT_ADDRESS,
+        state: "ESCROWED" as const,
+        facetId: `0x${"2".repeat(64)}` as const,
+        payer,
+        creatorPayTo: creator,
+        unitPriceAtomic: "500",
+        maxAmountAtomic: "5000",
+        expiresAtUnix: 1577836800,
+        expiresAtIso: "2020-01-01T00:00:00.000Z",
+        expired: true,
+      }),
+      reclaimExpiredEscrow: async (_account: unknown, targetRunId: string) => {
+        reclaimCalls.push(targetRunId);
+        return {
+          runId: targetRunId,
+          runKey: `0x${"1".repeat(64)}` as const,
+          contractAddress: FACET_FEE_SPLIT_ADDRESS,
+          txHash: `0x${"e".repeat(64)}` as const,
+          payer,
+          refundAmountAtomic: "5000",
+        };
+      },
+    };
+
+    const statusOut: string[] = [];
+    const statusCode = await runCli(["escrow", "status", runId], {
+      walletStore,
+      spendLedger,
+      escrowClient,
+      stdout: (line) => statusOut.push(line),
+      stderr: (line) => {
+        throw new Error(`Unexpected stderr: ${line}`);
+      },
+    });
+    expect(statusCode).toBe(0);
+    expect(statusOut[0]).toContain("ESCROWED");
+    expect(statusOut[0]).toContain("Avalanche");
+    expect(statusOut[0]).not.toMatch(/\bfuji\b/iu);
+
+    const reclaimOut: string[] = [];
+    const reclaimCode = await runCli(["escrow", "reclaim", runId, "--json"], {
+      walletStore,
+      spendLedger,
+      escrowClient,
+      stdout: (line) => reclaimOut.push(line),
+      stderr: (line) => {
+        throw new Error(`Unexpected stderr: ${line}`);
+      },
+    });
+    expect(reclaimCode).toBe(0);
+    expect(reclaimCalls).toEqual([runId]);
+    expect(JSON.parse(reclaimOut[0]!)).toMatchObject({
+      runId,
+      payer,
+      refundAmountAtomic: "5000",
+      ledgerReleased: 1,
+    });
+    const entries = await spendLedger.list();
+    expect(entries[0]?.status).toBe("RELEASED");
+    expect(entries[0]?.errorCode).toBe("ESCROW_RECLAIMED_AFTER_EXPIRY");
   });
 });
