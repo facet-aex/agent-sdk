@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   FACET_FEE_SPLIT_ADDRESS,
+  FACET_LEGACY_FEE_SPLIT_V1_ADDRESS,
   FUJI_CHAIN_ID,
   FUJI_NETWORK,
   FUSD_ASSET_ADDRESS,
@@ -886,9 +887,14 @@ export function validateGrantAgainstChallenge(
     challenge.settlementPayTo.toLowerCase() !==
     grant.settlementContract.toLowerCase()
   ) {
+    const legacyHint =
+      grant.settlementContract.toLowerCase() ===
+      FACET_LEGACY_FEE_SPLIT_V1_ADDRESS.toLowerCase()
+        ? " Re-run `facet policy grant` to update your local policy for the upgraded payment contract."
+        : "";
     throw new SpendPolicyError(
       "POLICY_RECIPIENT_MISMATCH",
-      `Challenge payTo ${challenge.settlementPayTo} does not match pinned FeeSplit contract ${grant.settlementContract}.`,
+      `Challenge payTo ${challenge.settlementPayTo} does not match pinned FeeSplit contract ${grant.settlementContract}.${legacyHint}`,
     );
   }
 

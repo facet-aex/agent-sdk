@@ -684,5 +684,18 @@ describe("SpendPolicy Option B store & authorization", () => {
         maxAmountAtomic: "1000",
       },
     ]);
+
+    expect(() =>
+      validateGrantAgainstChallenge(legacyV2Grant, {
+        provider: legacyV2Grant.provider,
+        facetName: legacyV2Grant.facetName,
+        version: legacyV2Grant.version,
+        chainId: FUJI_CHAIN_ID,
+        assetAddress: FUSD_ASSET_ADDRESS,
+        settlementPayTo: "0x0000000000000000000000000000000000000099",
+        providerPayTo: payTo,
+        amountAtomic: "1000",
+      }),
+    ).toThrowError(/facet policy grant/iu);
   });
 });
