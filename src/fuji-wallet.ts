@@ -22,9 +22,8 @@ export const FUSD_DECIMALS = 6 as const;
 export const FUSD_SYMBOL = "fUSD" as const;
 export const FACET_LEGACY_FEE_SPLIT_V1_ADDRESS =
   "0xc50cb5d5ff6c71eb1b065971c198a9edb0ecff06" as const;
-// TODO(T8): update to deployed FacetFeeSplitAndEscrow v2 address after Fuji deployment.
 export const FACET_FEE_SPLIT_ADDRESS =
-  "0xc50cb5d5ff6c71eb1b065971c198a9edb0ecff06" as const;
+  "0x8f04b927606a309d2835ed097ba4a37a6b3b0a05" as const;
 export const FACET_ACTOR_REGISTRY_ADDRESS =
   "0xc37c12bcd53a4ba5fd33870cecc74a4ba601e3a2" as const;
 export const FACET_RECEIPT_LOG_ADDRESS =
